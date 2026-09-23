@@ -10,7 +10,9 @@ El ESP32-S3 recibe **5 V** desde la salida del modulo BEC / Step-Down BLITZ, con
 
 ## 2. Sensores Sharp GP2Y0E03
 
-Durante la prueba se comprobo que los sensores izquierdos y derechos estaban invertidos respecto del esquema original. El mapeo correcto es:
+Durante la prueba se comprobo que los sensores izquierdos y derechos estaban invertidos respecto del esquema original.
+
+### Salidas analogicas Vout
 
 | Sensor fisico | Pin Vout | ESP32-S3 |
 |---|---:|---:|
@@ -19,18 +21,52 @@ Durante la prueba se comprobo que los sensores izquierdos y derechos estaban inv
 | Lateral izquierdo | Pin 2 | GPIO 4 |
 | Lateral derecho | Pin 2 | GPIO 3 |
 
+### Control Active / Stand-by
+
+Para evitar que varios emisores IR trabajen al mismo tiempo, ahora se utiliza el **Pin 5 (GPIO1)** de cada GP2Y0E03.
+
+| Sensor fisico | Pin del Sharp | ESP32-S3 |
+|---|---:|---:|
+| Frontal izquierdo | Pin 5 (GPIO1) | GPIO 15 |
+| Frontal derecho | Pin 5 (GPIO1) | GPIO 16 |
+| Lateral izquierdo | Pin 5 (GPIO1) | GPIO 17 |
+| Lateral derecho | Pin 5 (GPIO1) | GPIO 18 |
+
+Funcion:
+
+- GPIO1 del Sharp en HIGH -> sensor activo.
+- GPIO1 del Sharp en LOW -> sensor en stand-by.
+- El firmware mantiene un solo sensor activo por vez.
+- Cada sensor se mantiene activo 45 ms antes de tomar la lectura analogica.
+- Luego se apaga y se activa el siguiente.
+
+El ciclo es:
+
+```text
+Frontal izquierdo
+      ->
+Frontal derecho
+      ->
+Lateral izquierdo
+      ->
+Lateral derecho
+      ->
+repetir
+```
+
 Alimentacion de cada sensor:
 
 - Pin 1 (VDD) -> 3V3
 - Pin 4 (VIN_IO) -> 3V3
 - Pin 3 (GND) -> GND
-- Pin 2 (Vout) -> GPIO correspondiente
-
-Los pines de interfaz digital/I2C que no se usan en esta etapa quedan desconectados.
+- Pin 2 (Vout) -> GPIO analogico correspondiente
+- Pin 5 (GPIO1) -> GPIO 15/16/17/18 segun sensor
+- Pin 6 (SCL) -> sin conectar
+- Pin 7 (SDA) -> sin conectar
 
 ## 3. Driver DRV8833
 
-Durante la prueba se comprobo que los canales de motores tambien estaban cruzados respecto del esquema original.
+Durante la prueba se comprobo que los canales de motores estaban cruzados respecto del esquema original.
 
 | DRV8833 | Funcion real | Conexion |
 |---|---|---|
@@ -48,18 +84,9 @@ El motor fisico izquierdo gira en sentido contrario respecto de la logica espera
 
 ## 4. Encoders de motores
 
+Durante la nueva prueba se comprobo que los encoders izquierdo y derecho tambien estaban invertidos respecto del mapeo original.
+
 ### Motor izquierdo fisico
-
-| Cable | Funcion | Conexion |
-|---|---|---|
-| Negro (VCC) | Alimentacion encoder | 3V3 |
-| Azul (GND) | Tierra encoder | GND |
-| Verde (C1) | Canal A | GPIO 9 |
-| Amarillo (C2) | Canal B | GPIO 10 |
-
-**Estado:** probado y funcionando correctamente.
-
-### Motor derecho fisico
 
 | Cable | Funcion | Conexion |
 |---|---|---|
@@ -68,7 +95,14 @@ El motor fisico izquierdo gira en sentido contrario respecto de la logica espera
 | Verde (C1) | Canal A | GPIO 11 |
 | Amarillo (C2) | Canal B | GPIO 12 |
 
-**Estado:** no responde actualmente. Pendiente verificar si cambian las señales A/B en GPIO 11 y GPIO 12 para determinar si el problema es cableado, alimentacion, encoder o software.
+### Motor derecho fisico
+
+| Cable | Funcion | Conexion |
+|---|---|---|
+| Negro (VCC) | Alimentacion encoder | 3V3 |
+| Azul (GND) | Tierra encoder | GND |
+| Verde (C1) | Canal A | GPIO 9 |
+| Amarillo (C2) | Canal B | GPIO 10 |
 
 ## 5. Alimentacion
 
@@ -83,13 +117,15 @@ El motor fisico izquierdo gira en sentido contrario respecto de la logica espera
 - Motor fisico derecho: identificado correctamente.
 - Sensores frontales: izquierda/derecha corregidos.
 - Sensores laterales: izquierda/derecha corregidos.
-- Encoder izquierdo: OK.
-- Encoder derecho: pendiente de diagnostico.
+- Sensores: agregado control secuencial, uno activo por vez.
+- Encoders: lados corregidos en firmware; pendiente volver a validar ambos fisicamente.
 
 ## 7. Recomendaciones de prueba
 
-1. Mantener el robot con las ruedas levantadas durante las pruebas de motores.
-2. Usar PWM bajo, por ejemplo 60-80.
-3. Confirmar que ADELANTE mueve cada rueda en el sentido correcto.
-4. Verificar los cuatro sensores individualmente acercando una mano u objeto.
-5. Para el encoder derecho, observar primero los estados A y B en la interfaz mientras se gira la rueda manualmente.
+1. Antes de cargar esta version, conectar el Pin 5 (GPIO1) de cada Sharp a GPIO 15, 16, 17 y 18.
+2. Mantener VDD y VIN(IO) de los sensores a 3.3 V.
+3. Mantener el robot con las ruedas levantadas durante las pruebas de motores.
+4. Usar PWM bajo, por ejemplo 60-80.
+5. Confirmar que ADELANTE mueve cada rueda en el sentido correcto.
+6. Verificar los cuatro sensores individualmente.
+7. Girar cada rueda manualmente y comprobar que el encoder mostrado corresponde al lado fisico correcto.
