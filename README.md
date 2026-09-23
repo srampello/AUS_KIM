@@ -13,7 +13,7 @@ Proyecto para programar desde cero el robot de laberinto prestado **AUS_KIM**, b
 
 ## Etapa 01 - Diagnostico Wi-Fi
 
-La primera version permite probar por separado los principales elementos del robot desde una interfaz web alojada en el ESP32-S3.
+La interfaz web permite probar motores, encoders y sensores de forma independiente.
 
 ### Red
 
@@ -21,29 +21,28 @@ La primera version permite probar por separado los principales elementos del rob
 - Clave: `AUSKIM2026`
 - Panel: `http://192.168.4.1`
 
-### Funciones
+### Funciones actuales
 
-- Lectura en tiempo real de los 4 sensores IR en ADC crudo.
-- **Activacion secuencial de sensores: solo uno emite IR por vez.**
 - Control independiente de motor izquierdo y derecho.
 - PWM ajustable de 0 a 255.
-- Botones ADELANTE / ATRAS de tipo mantener presionado.
-- Lectura de ambos encoders de cuadratura.
-- Visualizacion de canales A/B.
-- Reset de encoders.
-- STOP general.
-- Fail-safe de motores de 1 segundo.
+- ADELANTE / ATRAS mientras se mantiene presionado.
+- STOP general y fail-safe.
+- Lectura de encoders con canales A/B.
+- Correccion izquierda/derecha de encoders **solo en la interfaz**.
+- Seleccion manual de los Sharp.
+- Solo un sensor Sharp puede permanecer activo a la vez.
+- Boton para apagar todos los sensores.
 
-## Pinout verificado
+## Pinout
 
 ### Sharp - Vout
 
-| Funcion fisica | GPIO |
+| Sensor fisico | GPIO |
 |---|---:|
-| Sharp frontal izquierdo | 2 |
-| Sharp frontal derecho | 1 |
-| Sharp lateral izquierdo | 4 |
-| Sharp lateral derecho | 3 |
+| Frontal izquierdo | 2 |
+| Frontal derecho | 1 |
+| Lateral izquierdo | 4 |
+| Lateral derecho | 3 |
 
 ### Sharp - Pin 5 GPIO1 / Enable
 
@@ -63,30 +62,38 @@ La primera version permite probar por separado los principales elementos del rob
 | DRV8833 IN1 motor derecho | 5 |
 | DRV8833 IN2 motor derecho | 6 |
 
-El **motor fisico izquierdo** requiere inversion de sentido por software.
+El motor fisico izquierdo requiere inversion de sentido por software.
 
-### Encoders
+### Encoders - cableado sin cambios
 
-| Funcion fisica | GPIO |
+| Conexion | GPIO |
 |---|---:|
-| Encoder izquierdo A | 11 |
-| Encoder izquierdo B | 12 |
-| Encoder derecho A | 9 |
-| Encoder derecho B | 10 |
+| Encoder A del primer par | 9 |
+| Encoder B del primer par | 10 |
+| Encoder A del segundo par | 11 |
+| Encoder B del segundo par | 12 |
 
-## Activacion secuencial de los Sharp
+La interfaz intercambia solamente la presentacion izquierda/derecha de esos datos. No se modifico el cableado.
 
-La version actual utiliza el Pin 5 (GPIO1) del GP2Y0E03 para poner los sensores en Active / Stand-by.
+## Seleccion manual de sensores
 
-Solo uno permanece activo:
+Al iniciar, los cuatro Sharp quedan apagados. En el panel aparecen cuatro botones:
 
 ```text
-FL -> FR -> LL -> LR -> repetir
+[ ACTIVAR Frontal izquierdo ]   [ ACTIVAR Frontal derecho ]
+[ ACTIVAR Lateral izquierdo ]   [ ACTIVAR Lateral derecho ]
+
+              [ APAGAR SENSORES ]
 ```
 
-El firmware espera 45 ms despues de activar cada sensor, guarda su lectura ADC y pasa al siguiente.
+Cuando se pulsa un sensor:
 
-**Importante:** el Pin 5 de cada Sharp debe cablearse a GPIO 15, 16, 17 y 18. Si esos pines siguen desconectados, el firmware no puede apagar individualmente los emisores.
+1. se apagan los cuatro,
+2. se activa solamente el seleccionado,
+3. se espera el tiempo de estabilizacion,
+4. se muestra y actualiza unicamente esa lectura.
+
+Para esto, el Pin 5 (GPIO1) de cada GP2Y0E03 debe estar conectado a GPIO 15, 16, 17 y 18 del ESP32-S3.
 
 ## Estructura
 
@@ -100,22 +107,19 @@ AUS_KIM/
 └── README.md
 ```
 
-Ver [docs/conexiones.md](docs/conexiones.md) para el cableado detallado.
-
-## Como actualizar la copia local
+## Actualizar la copia local
 
 ```bash
 git pull origin master
 ```
 
-## Plan de desarrollo
+## Proximo paso
 
-1. Diagnostico Wi-Fi.
-2. Validar activacion individual de los cuatro Sharp.
-3. Validar ambos encoders con el nuevo mapeo.
-4. Calibracion de los Sharp.
-5. Medicion de velocidad de ruedas mediante encoders.
-6. PID independiente de velocidad de cada motor.
-7. Movimiento recto y giros de 90 grados.
-8. Seguimiento de pared.
-9. Navegacion del laberinto.
+1. Validar los cuatro botones de sensores.
+2. Confirmar la visualizacion correcta de ambos encoders.
+3. Calibrar los Sharp.
+4. Medir velocidad de ruedas.
+5. Implementar PID.
+6. Movimiento recto y giros.
+7. Seguimiento de pared.
+8. Navegacion del laberinto.
