@@ -42,7 +42,7 @@ Los pines de interfaz digital/I2C que no se usan en esta etapa quedan desconecta
 | OUT1 / OUT2 | Motor izquierdo | Blanco / Rojo |
 | OUT3 / OUT4 | Motor derecho | Blanco / Rojo |
 
-En el firmware de diagnostico los cuatro pines IN usan PWM.
+En el firmware de diagnostico los cuatro pines IN usan PWM. Durante la primera prueba se verifico que el cableado fisico de los motores estaba cruzado respecto de la documentacion original: IN1/IN2 controlan el motor derecho e IN3/IN4 controlan el izquierdo. Tambien se verifico que el motor fisico izquierdo requiere inversion de sentido por software.
 
 ## 4. Encoders de motores
 
@@ -84,4 +84,4 @@ Cada motor dispone de dos cables de potencia y cuatro cables del encoder.
 3. Verificar cada motor individualmente.
 4. Si un boton ADELANTE produce giro inverso, cambiar la constante de inversion correspondiente en el firmware.
 5. No convertir aun los Sharp a centimetros: primero registrar sus valores ADC a distancias conocidas.
-6. Verificar que los contadores de encoder cambien al girar cada rueda manualmente.
+6. Verificar que los contadores de encoder cambien al girar cada rueda manualmente.\n7. Estado de prueba: encoder fisico izquierdo OK; encoder fisico derecho pendiente de diagnostico. Revisar primero los estados A/B en la interfaz antes de modificar el firmware.
