@@ -13,7 +13,7 @@ Proyecto para programar desde cero el robot de laberinto prestado **AUS_KIM**, b
 
 ## Etapa 01 - Diagnostico Wi-Fi
 
-La primera version del proyecto permite probar por separado todos los elementos principales del robot desde una interfaz web alojada en el ESP32-S3.
+La primera version permite probar por separado los principales elementos del robot desde una interfaz web alojada en el ESP32-S3.
 
 ### Red
 
@@ -24,15 +24,44 @@ La primera version del proyecto permite probar por separado todos los elementos 
 ### Funciones
 
 - Lectura en tiempo real de los 4 sensores IR en ADC crudo.
-- Control independiente del motor izquierdo.
-- Control independiente del motor derecho.
+- Control independiente de motor izquierdo y derecho.
 - PWM ajustable de 0 a 255.
 - Botones ADELANTE / ATRAS de tipo mantener presionado.
 - Lectura de ambos encoders de cuadratura.
-- Visualizacion de los canales A/B.
+- Visualizacion de canales A/B.
 - Reset de encoders.
 - STOP general.
 - Fail-safe: si se pierde la comunicacion durante 1 segundo, se detienen ambos motores.
+
+## Pinout verificado
+
+Durante la primera prueba se detecto que motores y sensores estaban cruzados respecto de la documentacion original.
+
+| Funcion fisica | GPIO |
+|---|---:|
+| Sharp frontal izquierdo | 2 |
+| Sharp frontal derecho | 1 |
+| Sharp lateral izquierdo | 4 |
+| Sharp lateral derecho | 3 |
+| DRV8833 IN3 motor izquierdo | 7 |
+| DRV8833 IN4 motor izquierdo | 8 |
+| DRV8833 IN1 motor derecho | 5 |
+| DRV8833 IN2 motor derecho | 6 |
+| Encoder izquierdo A | 9 |
+| Encoder izquierdo B | 10 |
+| Encoder derecho A | 11 |
+| Encoder derecho B | 12 |
+
+El **motor fisico izquierdo** requiere inversion de sentido por software.
+
+## Estado de pruebas
+
+- Motor izquierdo: identificado y corregido.
+- Motor derecho: identificado.
+- Sensores frontales: lados corregidos.
+- Sensores laterales: lados corregidos.
+- Encoder izquierdo: funcionando.
+- Encoder derecho: pendiente de diagnostico.
 
 ## Estructura
 
@@ -46,26 +75,9 @@ AUS_KIM/
 └── README.md
 ```
 
-## Pinout
+Ver [docs/conexiones.md](docs/conexiones.md) para el detalle del cableado verificado.
 
-| Funcion | GPIO |
-|---|---:|
-| Sharp frontal izquierdo | 1 |
-| Sharp frontal derecho | 2 |
-| Sharp lateral izquierdo | 3 |
-| Sharp lateral derecho | 4 |
-| DRV8833 IN1 motor izquierdo | 5 |
-| DRV8833 IN2 motor izquierdo | 6 |
-| DRV8833 IN3 motor derecho | 7 |
-| DRV8833 IN4 motor derecho | 8 |
-| Encoder izquierdo A | 9 |
-| Encoder izquierdo B | 10 |
-| Encoder derecho A | 11 |
-| Encoder derecho B | 12 |
-
-Ver [docs/conexiones.md](docs/conexiones.md) para el detalle completo.
-
-## Como probar la Etapa 01
+## Como probar
 
 1. Abrir `firmware/01_wifi_test/AUS_KIM_WIFI_TEST.ino` en Arduino IDE.
 2. Seleccionar la placa ESP32-S3 correspondiente.
@@ -73,15 +85,17 @@ Ver [docs/conexiones.md](docs/conexiones.md) para el detalle completo.
 4. Encender el robot con las ruedas levantadas.
 5. Conectarse a la red Wi-Fi `AUS_KIM`.
 6. Abrir `http://192.168.4.1`.
-7. Probar primero sensores y encoders.
+7. Confirmar sensores y encoder izquierdo.
 8. Probar cada motor con PWM bajo.
+9. Para el encoder derecho, observar los estados A/B mientras se gira la rueda manualmente.
 
 ## Plan de desarrollo
 
 1. Diagnostico Wi-Fi.
-2. Calibracion de los Sharp.
-3. Medicion de velocidad de ruedas mediante encoders.
-4. PID independiente de velocidad de cada motor.
-5. Movimiento recto y giros de 90 grados.
-6. Seguimiento de pared.
-7. Navegacion del laberinto.
+2. Resolver encoder derecho.
+3. Calibracion de los Sharp.
+4. Medicion de velocidad de ruedas mediante encoders.
+5. PID independiente de velocidad de cada motor.
+6. Movimiento recto y giros de 90 grados.
+7. Seguimiento de pared.
+8. Navegacion del laberinto.
