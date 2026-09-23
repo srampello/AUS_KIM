@@ -42,9 +42,10 @@ const uint32_t PWM_FREQ = 20000; // 20 kHz: fuera del rango audible
 const uint8_t PWM_BITS = 8;      // 0..255
 
 // Sensores Sharp:
-// Se mantiene UN SOLO sensor en estado activo por vez para evitar interferencias IR.
-// El datasheet indica un tiempo de respuesta maximo de 40 ms, por eso esperamos 45 ms.
+// El usuario selecciona manualmente UN SOLO sensor desde la interfaz.
+// Al cambiar de sensor, se apagan los cuatro y se activa solamente el elegido.
 const uint32_t SENSOR_SETTLE_MS = 45;
+const uint32_t SENSOR_READ_INTERVAL_MS = 20;
 
 // Si al probar un motor "Adelante" gira al reves, cambiar false -> true.
 // Correcciones verificadas en el robot real:
@@ -79,12 +80,14 @@ const uint8_t PIN_MOTOR_L_IN2 = 8; // IN4 -> motor fisico izquierdo
 const uint8_t PIN_MOTOR_R_IN1 = 5; // IN1 -> motor fisico derecho
 const uint8_t PIN_MOTOR_R_IN2 = 6; // IN2 -> motor fisico derecho
 
-// Encoders
-// Verificado fisicamente: izquierda/derecha estaban invertidos en la interfaz.
-const uint8_t PIN_ENC_L_A = 11;
-const uint8_t PIN_ENC_L_B = 12;
-const uint8_t PIN_ENC_R_A = 9;
-const uint8_t PIN_ENC_R_B = 10;
+// Encoders - cableado fisico original (NO se cambia).
+const uint8_t PIN_ENC_L_A = 9;
+const uint8_t PIN_ENC_L_B = 10;
+const uint8_t PIN_ENC_R_A = 11;
+const uint8_t PIN_ENC_R_B = 12;
+
+// Nota: en la interfaz los encoders se muestran intercambiados
+// para corregir solamente la visualizacion, sin tocar el cableado.
 
 // Canales LEDC para Arduino-ESP32 2.x
 const uint8_t CH_L_IN1 = 0;
@@ -93,10 +96,11 @@ const uint8_t CH_R_IN1 = 2;
 const uint8_t CH_R_IN2 = 3;
 
 // ============================================================
-// 3. SENSORES IR - ACTIVACION SECUENCIAL
+// 3. SENSORES IR - SELECCION MANUAL
 // ============================================================
 
-enum SensorIndex : uint8_t {
+enum SensorIndex : int8_t {
+  SENSOR_NONE = -1,
   SENSOR_FRONT_LEFT = 0,
   SENSOR_FRONT_RIGHT,
   SENSOR_SIDE_LEFT,
@@ -108,8 +112,9 @@ uint16_t irFrontRight = 0;
 uint16_t irSideLeft = 0;
 uint16_t irSideRight = 0;
 
-SensorIndex activeSensor = SENSOR_FRONT_LEFT;
+SensorIndex activeSensor = SENSOR_NONE;
 uint32_t sensorActivatedAtMs = 0;
+uint32_t sensorLastReadMs = 0;
 
 void disableAllSensors() {
   digitalWrite(PIN_IR_EN_FRONT_LEFT, LOW);
@@ -118,8 +123,12 @@ void disableAllSensors() {
   digitalWrite(PIN_IR_EN_SIDE_RIGHT, LOW);
 }
 
-void activateOnlySensor(SensorIndex sensor) {
+void selectSensor(SensorIndex sensor) {
   disableAllSensors();
+
+  activeSensor = sensor;
+  sensorActivatedAtMs = millis();
+  sensorLastReadMs = 0;
 
   switch (sensor) {
     case SENSOR_FRONT_LEFT:
@@ -134,28 +143,40 @@ void activateOnlySensor(SensorIndex sensor) {
     case SENSOR_SIDE_RIGHT:
       digitalWrite(PIN_IR_EN_SIDE_RIGHT, HIGH);
       break;
+    case SENSOR_NONE:
+    default:
+      break;
   }
-
-  activeSensor = sensor;
-  sensorActivatedAtMs = millis();
 }
 
 const char* sensorName(SensorIndex sensor) {
   switch (sensor) {
-    case SENSOR_FRONT_LEFT:  return "frontal_izquierdo";
-    case SENSOR_FRONT_RIGHT: return "frontal_derecho";
-    case SENSOR_SIDE_LEFT:   return "lateral_izquierdo";
-    case SENSOR_SIDE_RIGHT:  return "lateral_derecho";
+    case SENSOR_FRONT_LEFT:  return "FL";
+    case SENSOR_FRONT_RIGHT: return "FR";
+    case SENSOR_SIDE_LEFT:   return "LL";
+    case SENSOR_SIDE_RIGHT:  return "LR";
+    case SENSOR_NONE:
+    default:                 return "OFF";
   }
-  return "desconocido";
 }
 
-void updateSensorsSequential() {
-  if (millis() - sensorActivatedAtMs < SENSOR_SETTLE_MS) {
+void updateSelectedSensor() {
+  if (activeSensor == SENSOR_NONE) {
     return;
   }
 
-  // Se lee solamente el sensor que esta activo.
+  uint32_t now = millis();
+
+  if (now - sensorActivatedAtMs < SENSOR_SETTLE_MS) {
+    return;
+  }
+
+  if (sensorLastReadMs != 0 && now - sensorLastReadMs < SENSOR_READ_INTERVAL_MS) {
+    return;
+  }
+
+  sensorLastReadMs = now;
+
   switch (activeSensor) {
     case SENSOR_FRONT_LEFT:
       irFrontLeft = analogRead(PIN_IR_FRONT_LEFT);
@@ -169,12 +190,10 @@ void updateSensorsSequential() {
     case SENSOR_SIDE_RIGHT:
       irSideRight = analogRead(PIN_IR_SIDE_RIGHT);
       break;
+    case SENSOR_NONE:
+    default:
+      break;
   }
-
-  SensorIndex nextSensor =
-    static_cast<SensorIndex>((static_cast<uint8_t>(activeSensor) + 1) % 4);
-
-  activateOnlySensor(nextSensor);
 }
 
 // ============================================================
@@ -465,6 +484,16 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
     .forward { border-color: var(--good); }
     .reverse { border-color: #d29922; }
     .stop { border-color: var(--danger); }
+    .sensor-btn.active {
+      background: var(--good);
+      border-color: var(--good);
+    }
+    .sensor-controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 12px;
+    }
 
     .encoder-grid {
       display: grid;
@@ -530,31 +559,45 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
 
     <div class="grid">
       <section class="card">
-        <h2>Sensores IR - ADC crudo</h2>
+        <h2>Sensores IR - seleccion manual</h2>
         <div class="badge" style="margin-bottom:10px;">
-          Activo ahora: <b id="activeSensor">...</b>
+          Sensor activo: <b id="activeSensor">NINGUNO</b>
         </div>
+
         <div class="sensor-grid">
           <div class="sensor">
             <div class="label">Frontal izquierdo</div>
-            <div class="value" id="fl">0</div>
+            <div class="value" id="fl">--</div>
+            <button class="sensor-btn" id="sensorFL" onclick="selectSensor('FL')">ACTIVAR</button>
           </div>
+
           <div class="sensor">
             <div class="label">Frontal derecho</div>
-            <div class="value" id="fr">0</div>
+            <div class="value" id="fr">--</div>
+            <button class="sensor-btn" id="sensorFR" onclick="selectSensor('FR')">ACTIVAR</button>
           </div>
+
           <div class="sensor">
             <div class="label">Lateral izquierdo</div>
-            <div class="value" id="sl">0</div>
+            <div class="value" id="sl">--</div>
+            <button class="sensor-btn" id="sensorLL" onclick="selectSensor('LL')">ACTIVAR</button>
           </div>
+
           <div class="sensor">
             <div class="label">Lateral derecho</div>
-            <div class="value" id="sr">0</div>
+            <div class="value" id="sr">--</div>
+            <button class="sensor-btn" id="sensorLR" onclick="selectSensor('LR')">ACTIVAR</button>
           </div>
         </div>
+
+        <div class="sensor-controls">
+          <button class="stop" onclick="selectSensor('OFF')">APAGAR SENSORES</button>
+          <button onclick="clearSensorValues()">LIMPIAR VALORES</button>
+        </div>
+
         <div class="hint">
-          Los sensores se activan secuencialmente: nunca hay mas de un emisor IR activo.
-          Los valores mostrados son la ultima lectura valida de cada sensor.
+          Elegis manualmente que Sharp queda activo. Al activar uno, los otros tres
+          pasan a stand-by. Solo el sensor seleccionado actualiza su lectura.
         </div>
       </section>
 
@@ -724,6 +767,42 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
     if (activeMotor === 'R' && activeDir) await sendMotor('R', activeDir);
   });
 
+  async function selectSensor(sensor) {
+    await fetch('/api/sensor?sensor=' + sensor, { cache: 'no-store' });
+    await updateStatus();
+  }
+
+  function clearSensorValues() {
+    document.getElementById('fl').textContent = '--';
+    document.getElementById('fr').textContent = '--';
+    document.getElementById('sl').textContent = '--';
+    document.getElementById('sr').textContent = '--';
+  }
+
+  function setActiveSensorUi(active) {
+    const map = {
+      FL: ['Frontal izquierdo', 'fl', 'sensorFL'],
+      FR: ['Frontal derecho', 'fr', 'sensorFR'],
+      LL: ['Lateral izquierdo', 'sl', 'sensorLL'],
+      LR: ['Lateral derecho', 'sr', 'sensorLR']
+    };
+
+    ['sensorFL', 'sensorFR', 'sensorLL', 'sensorLR'].forEach(id => {
+      document.getElementById(id).classList.remove('active');
+    });
+
+    ['fl', 'fr', 'sl', 'sr'].forEach(id => {
+      document.getElementById(id).textContent = '--';
+    });
+
+    if (map[active]) {
+      document.getElementById('activeSensor').textContent = map[active][0];
+      document.getElementById(map[active][2]).classList.add('active');
+    } else {
+      document.getElementById('activeSensor').textContent = 'NINGUNO';
+    }
+  }
+
   async function resetEncoders() {
     await fetch('/api/reset_encoders', { cache: 'no-store' });
   }
@@ -739,19 +818,21 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
       const response = await fetch('/api/status', { cache: 'no-store' });
       const data = await response.json();
 
-      document.getElementById('fl').textContent = data.ir.fl;
-      document.getElementById('fr').textContent = data.ir.fr;
-      document.getElementById('sl').textContent = data.ir.sl;
-      document.getElementById('sr').textContent = data.ir.sr;
-      document.getElementById('activeSensor').textContent = data.ir.active;
+      setActiveSensorUi(data.ir.active);
 
-      document.getElementById('encL').textContent = data.enc.left;
-      document.getElementById('encR').textContent = data.enc.right;
+      if (data.ir.active === 'FL') document.getElementById('fl').textContent = data.ir.fl;
+      if (data.ir.active === 'FR') document.getElementById('fr').textContent = data.ir.fr;
+      if (data.ir.active === 'LL') document.getElementById('sl').textContent = data.ir.sl;
+      if (data.ir.active === 'LR') document.getElementById('sr').textContent = data.ir.sr;
 
-      document.getElementById('encLA').textContent = data.enc.la;
-      document.getElementById('encLB').textContent = data.enc.lb;
-      document.getElementById('encRA').textContent = data.enc.ra;
-      document.getElementById('encRB').textContent = data.enc.rb;
+      // Correccion SOLO VISUAL: el cableado de los encoders no se modifica.
+      document.getElementById('encL').textContent = data.enc.right;
+      document.getElementById('encR').textContent = data.enc.left;
+
+      document.getElementById('encLA').textContent = data.enc.ra;
+      document.getElementById('encLB').textContent = data.enc.rb;
+      document.getElementById('encRA').textContent = data.enc.la;
+      document.getElementById('encRB').textContent = data.enc.lb;
 
       document.getElementById('stateL').textContent =
         dirText(data.motor.leftDir) + ' | PWM ' + data.motor.leftPwm;
@@ -864,6 +945,32 @@ void handleMotor() {
   server.send(200, "text/plain", "OK");
 }
 
+void handleSensor() {
+  if (!server.hasArg("sensor")) {
+    server.send(400, "text/plain", "Parametro requerido: sensor");
+    return;
+  }
+
+  String sensor = server.arg("sensor");
+
+  if (sensor == "FL") {
+    selectSensor(SENSOR_FRONT_LEFT);
+  } else if (sensor == "FR") {
+    selectSensor(SENSOR_FRONT_RIGHT);
+  } else if (sensor == "LL") {
+    selectSensor(SENSOR_SIDE_LEFT);
+  } else if (sensor == "LR") {
+    selectSensor(SENSOR_SIDE_RIGHT);
+  } else if (sensor == "OFF") {
+    selectSensor(SENSOR_NONE);
+  } else {
+    server.send(400, "text/plain", "sensor debe ser FL, FR, LL, LR u OFF");
+    return;
+  }
+
+  server.send(200, "text/plain", sensorName(activeSensor));
+}
+
 void handleStop() {
   stopAllMotors();
   lastHeartbeatMs = millis();
@@ -911,7 +1018,7 @@ void setup() {
   pinMode(PIN_IR_EN_SIDE_RIGHT, OUTPUT);
 
   disableAllSensors();
-  activateOnlySensor(SENSOR_FRONT_LEFT);
+  selectSensor(SENSOR_NONE);
 
   // PWM
   setupPwmPin(PIN_MOTOR_L_IN1, CH_L_IN1);
@@ -959,6 +1066,7 @@ void setup() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api/status", HTTP_GET, handleStatus);
   server.on("/api/motor", HTTP_GET, handleMotor);
+  server.on("/api/sensor", HTTP_GET, handleSensor);
   server.on("/api/stop", HTTP_ANY, handleStop);
   server.on("/api/ping", HTTP_GET, handlePing);
   server.on("/api/reset_encoders", HTTP_GET, handleResetEncoders);
@@ -978,7 +1086,7 @@ void setup() {
 
 void loop() {
   server.handleClient();
-  updateSensorsSequential();
+  updateSelectedSensor();
 
   bool anyMotorRunning =
     (motorLeftDir != DIR_STOP) ||
