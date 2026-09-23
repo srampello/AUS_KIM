@@ -42,7 +42,11 @@ const uint32_t PWM_FREQ = 20000; // 20 kHz: fuera del rango audible
 const uint8_t PWM_BITS = 8;      // 0..255
 
 // Si al probar un motor "Adelante" gira al reves, cambiar false -> true.
-const bool INVERT_MOTOR_LEFT  = false;
+// Correcciones verificadas en el robot real:
+// - El motor fisico izquierdo esta conectado al canal IN3/IN4.
+// - El motor fisico derecho esta conectado al canal IN1/IN2.
+// - El motor fisico izquierdo requiere invertir el sentido por software.
+const bool INVERT_MOTOR_LEFT  = true;
 const bool INVERT_MOTOR_RIGHT = false;
 
 // ============================================================
@@ -50,16 +54,18 @@ const bool INVERT_MOTOR_RIGHT = false;
 // ============================================================
 
 // Sharp GP2Y0E03 - Vout analogico
-const uint8_t PIN_IR_FRONT_LEFT  = 1;
-const uint8_t PIN_IR_FRONT_RIGHT = 2;
-const uint8_t PIN_IR_SIDE_LEFT   = 3;
-const uint8_t PIN_IR_SIDE_RIGHT  = 4;
+// Verificado fisicamente: los lados estaban cruzados respecto al esquema original.
+const uint8_t PIN_IR_FRONT_LEFT  = 2;
+const uint8_t PIN_IR_FRONT_RIGHT = 1;
+const uint8_t PIN_IR_SIDE_LEFT   = 4;
+const uint8_t PIN_IR_SIDE_RIGHT  = 3;
 
 // DRV8833
-const uint8_t PIN_MOTOR_L_IN1 = 5;
-const uint8_t PIN_MOTOR_L_IN2 = 6;
-const uint8_t PIN_MOTOR_R_IN1 = 7;
-const uint8_t PIN_MOTOR_R_IN2 = 8;
+// Verificado fisicamente: los canales del DRV8833 estaban cruzados respecto al esquema original.
+const uint8_t PIN_MOTOR_L_IN1 = 7; // IN3 -> motor fisico izquierdo
+const uint8_t PIN_MOTOR_L_IN2 = 8; // IN4 -> motor fisico izquierdo
+const uint8_t PIN_MOTOR_R_IN1 = 5; // IN1 -> motor fisico derecho
+const uint8_t PIN_MOTOR_R_IN2 = 6; // IN2 -> motor fisico derecho
 
 // Encoders
 const uint8_t PIN_ENC_L_A = 9;
