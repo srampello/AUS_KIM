@@ -24,6 +24,7 @@ La primera version permite probar por separado los principales elementos del rob
 ### Funciones
 
 - Lectura en tiempo real de los 4 sensores IR en ADC crudo.
+- **Activacion secuencial de sensores: solo uno emite IR por vez.**
 - Control independiente de motor izquierdo y derecho.
 - PWM ajustable de 0 a 255.
 - Botones ADELANTE / ATRAS de tipo mantener presionado.
@@ -31,11 +32,11 @@ La primera version permite probar por separado los principales elementos del rob
 - Visualizacion de canales A/B.
 - Reset de encoders.
 - STOP general.
-- Fail-safe: si se pierde la comunicacion durante 1 segundo, se detienen ambos motores.
+- Fail-safe de motores de 1 segundo.
 
 ## Pinout verificado
 
-Durante la primera prueba se detecto que motores y sensores estaban cruzados respecto de la documentacion original.
+### Sharp - Vout
 
 | Funcion fisica | GPIO |
 |---|---:|
@@ -43,25 +44,49 @@ Durante la primera prueba se detecto que motores y sensores estaban cruzados res
 | Sharp frontal derecho | 1 |
 | Sharp lateral izquierdo | 4 |
 | Sharp lateral derecho | 3 |
+
+### Sharp - Pin 5 GPIO1 / Enable
+
+| Sensor | GPIO ESP32-S3 |
+|---|---:|
+| Frontal izquierdo | 15 |
+| Frontal derecho | 16 |
+| Lateral izquierdo | 17 |
+| Lateral derecho | 18 |
+
+### Motores
+
+| Funcion fisica | GPIO |
+|---|---:|
 | DRV8833 IN3 motor izquierdo | 7 |
 | DRV8833 IN4 motor izquierdo | 8 |
 | DRV8833 IN1 motor derecho | 5 |
 | DRV8833 IN2 motor derecho | 6 |
-| Encoder izquierdo A | 9 |
-| Encoder izquierdo B | 10 |
-| Encoder derecho A | 11 |
-| Encoder derecho B | 12 |
 
 El **motor fisico izquierdo** requiere inversion de sentido por software.
 
-## Estado de pruebas
+### Encoders
 
-- Motor izquierdo: identificado y corregido.
-- Motor derecho: identificado.
-- Sensores frontales: lados corregidos.
-- Sensores laterales: lados corregidos.
-- Encoder izquierdo: funcionando.
-- Encoder derecho: pendiente de diagnostico.
+| Funcion fisica | GPIO |
+|---|---:|
+| Encoder izquierdo A | 11 |
+| Encoder izquierdo B | 12 |
+| Encoder derecho A | 9 |
+| Encoder derecho B | 10 |
+
+## Activacion secuencial de los Sharp
+
+La version actual utiliza el Pin 5 (GPIO1) del GP2Y0E03 para poner los sensores en Active / Stand-by.
+
+Solo uno permanece activo:
+
+```text
+FL -> FR -> LL -> LR -> repetir
+```
+
+El firmware espera 45 ms despues de activar cada sensor, guarda su lectura ADC y pasa al siguiente.
+
+**Importante:** el Pin 5 de cada Sharp debe cablearse a GPIO 15, 16, 17 y 18. Si esos pines siguen desconectados, el firmware no puede apagar individualmente los emisores.
 
 ## Estructura
 
@@ -75,27 +100,22 @@ AUS_KIM/
 └── README.md
 ```
 
-Ver [docs/conexiones.md](docs/conexiones.md) para el detalle del cableado verificado.
+Ver [docs/conexiones.md](docs/conexiones.md) para el cableado detallado.
 
-## Como probar
+## Como actualizar la copia local
 
-1. Abrir `firmware/01_wifi_test/AUS_KIM_WIFI_TEST.ino` en Arduino IDE.
-2. Seleccionar la placa ESP32-S3 correspondiente.
-3. Compilar y cargar el firmware.
-4. Encender el robot con las ruedas levantadas.
-5. Conectarse a la red Wi-Fi `AUS_KIM`.
-6. Abrir `http://192.168.4.1`.
-7. Confirmar sensores y encoder izquierdo.
-8. Probar cada motor con PWM bajo.
-9. Para el encoder derecho, observar los estados A/B mientras se gira la rueda manualmente.
+```bash
+git pull origin master
+```
 
 ## Plan de desarrollo
 
 1. Diagnostico Wi-Fi.
-2. Resolver encoder derecho.
-3. Calibracion de los Sharp.
-4. Medicion de velocidad de ruedas mediante encoders.
-5. PID independiente de velocidad de cada motor.
-6. Movimiento recto y giros de 90 grados.
-7. Seguimiento de pared.
-8. Navegacion del laberinto.
+2. Validar activacion individual de los cuatro Sharp.
+3. Validar ambos encoders con el nuevo mapeo.
+4. Calibracion de los Sharp.
+5. Medicion de velocidad de ruedas mediante encoders.
+6. PID independiente de velocidad de cada motor.
+7. Movimiento recto y giros de 90 grados.
+8. Seguimiento de pared.
+9. Navegacion del laberinto.
