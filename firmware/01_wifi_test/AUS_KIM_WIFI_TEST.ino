@@ -41,6 +41,11 @@ uint32_t lastHeartbeatMs = 0;
 const uint32_t PWM_FREQ = 20000; // 20 kHz: fuera del rango audible
 const uint8_t PWM_BITS = 8;      // 0..255
 
+// Sensores Sharp:
+// Se mantiene UN SOLO sensor en estado activo por vez para evitar interferencias IR.
+// El datasheet indica un tiempo de respuesta maximo de 40 ms, por eso esperamos 45 ms.
+const uint32_t SENSOR_SETTLE_MS = 45;
+
 // Si al probar un motor "Adelante" gira al reves, cambiar false -> true.
 // Correcciones verificadas en el robot real:
 // - El motor fisico izquierdo esta conectado al canal IN3/IN4.
@@ -60,6 +65,13 @@ const uint8_t PIN_IR_FRONT_RIGHT = 1;
 const uint8_t PIN_IR_SIDE_LEFT   = 4;
 const uint8_t PIN_IR_SIDE_RIGHT  = 3;
 
+// GP2Y0E03 pin 5 (GPIO1): HIGH = activo, LOW = stand-by.
+// IMPORTANTE: para que el control funcione hay que cablear el pin 5 de cada sensor.
+const uint8_t PIN_IR_EN_FRONT_LEFT  = 15;
+const uint8_t PIN_IR_EN_FRONT_RIGHT = 16;
+const uint8_t PIN_IR_EN_SIDE_LEFT   = 17;
+const uint8_t PIN_IR_EN_SIDE_RIGHT  = 18;
+
 // DRV8833
 // Verificado fisicamente: los canales del DRV8833 estaban cruzados respecto al esquema original.
 const uint8_t PIN_MOTOR_L_IN1 = 7; // IN3 -> motor fisico izquierdo
@@ -68,10 +80,11 @@ const uint8_t PIN_MOTOR_R_IN1 = 5; // IN1 -> motor fisico derecho
 const uint8_t PIN_MOTOR_R_IN2 = 6; // IN2 -> motor fisico derecho
 
 // Encoders
-const uint8_t PIN_ENC_L_A = 9;
-const uint8_t PIN_ENC_L_B = 10;
-const uint8_t PIN_ENC_R_A = 11;
-const uint8_t PIN_ENC_R_B = 12;
+// Verificado fisicamente: izquierda/derecha estaban invertidos en la interfaz.
+const uint8_t PIN_ENC_L_A = 11;
+const uint8_t PIN_ENC_L_B = 12;
+const uint8_t PIN_ENC_R_A = 9;
+const uint8_t PIN_ENC_R_B = 10;
 
 // Canales LEDC para Arduino-ESP32 2.x
 const uint8_t CH_L_IN1 = 0;
@@ -80,7 +93,92 @@ const uint8_t CH_R_IN1 = 2;
 const uint8_t CH_R_IN2 = 3;
 
 // ============================================================
-// 3. ESTADO DE MOTORES
+// 3. SENSORES IR - ACTIVACION SECUENCIAL
+// ============================================================
+
+enum SensorIndex : uint8_t {
+  SENSOR_FRONT_LEFT = 0,
+  SENSOR_FRONT_RIGHT,
+  SENSOR_SIDE_LEFT,
+  SENSOR_SIDE_RIGHT
+};
+
+uint16_t irFrontLeft = 0;
+uint16_t irFrontRight = 0;
+uint16_t irSideLeft = 0;
+uint16_t irSideRight = 0;
+
+SensorIndex activeSensor = SENSOR_FRONT_LEFT;
+uint32_t sensorActivatedAtMs = 0;
+
+void disableAllSensors() {
+  digitalWrite(PIN_IR_EN_FRONT_LEFT, LOW);
+  digitalWrite(PIN_IR_EN_FRONT_RIGHT, LOW);
+  digitalWrite(PIN_IR_EN_SIDE_LEFT, LOW);
+  digitalWrite(PIN_IR_EN_SIDE_RIGHT, LOW);
+}
+
+void activateOnlySensor(SensorIndex sensor) {
+  disableAllSensors();
+
+  switch (sensor) {
+    case SENSOR_FRONT_LEFT:
+      digitalWrite(PIN_IR_EN_FRONT_LEFT, HIGH);
+      break;
+    case SENSOR_FRONT_RIGHT:
+      digitalWrite(PIN_IR_EN_FRONT_RIGHT, HIGH);
+      break;
+    case SENSOR_SIDE_LEFT:
+      digitalWrite(PIN_IR_EN_SIDE_LEFT, HIGH);
+      break;
+    case SENSOR_SIDE_RIGHT:
+      digitalWrite(PIN_IR_EN_SIDE_RIGHT, HIGH);
+      break;
+  }
+
+  activeSensor = sensor;
+  sensorActivatedAtMs = millis();
+}
+
+const char* sensorName(SensorIndex sensor) {
+  switch (sensor) {
+    case SENSOR_FRONT_LEFT:  return "frontal_izquierdo";
+    case SENSOR_FRONT_RIGHT: return "frontal_derecho";
+    case SENSOR_SIDE_LEFT:   return "lateral_izquierdo";
+    case SENSOR_SIDE_RIGHT:  return "lateral_derecho";
+  }
+  return "desconocido";
+}
+
+void updateSensorsSequential() {
+  if (millis() - sensorActivatedAtMs < SENSOR_SETTLE_MS) {
+    return;
+  }
+
+  // Se lee solamente el sensor que esta activo.
+  switch (activeSensor) {
+    case SENSOR_FRONT_LEFT:
+      irFrontLeft = analogRead(PIN_IR_FRONT_LEFT);
+      break;
+    case SENSOR_FRONT_RIGHT:
+      irFrontRight = analogRead(PIN_IR_FRONT_RIGHT);
+      break;
+    case SENSOR_SIDE_LEFT:
+      irSideLeft = analogRead(PIN_IR_SIDE_LEFT);
+      break;
+    case SENSOR_SIDE_RIGHT:
+      irSideRight = analogRead(PIN_IR_SIDE_RIGHT);
+      break;
+  }
+
+  SensorIndex nextSensor =
+    static_cast<SensorIndex>((static_cast<uint8_t>(activeSensor) + 1) % 4);
+
+  activateOnlySensor(nextSensor);
+}
+
+// ============================================================
+// 4. ESTADO DE MOTORES
 // ============================================================
 
 enum MotorDir : int8_t {
@@ -95,7 +193,7 @@ volatile uint8_t motorLeftPwm = 0;
 volatile uint8_t motorRightPwm = 0;
 
 // ============================================================
-// 4. ENCODERS
+// 5. ENCODERS
 // ============================================================
 
 volatile int32_t encoderLeft = 0;
@@ -132,7 +230,7 @@ void IRAM_ATTR updateEncoderRight() {
 }
 
 // ============================================================
-// 5. PWM COMPATIBLE CON ARDUINO-ESP32 2.x / 3.x
+// 6. PWM COMPATIBLE CON ARDUINO-ESP32 2.x / 3.x
 // ============================================================
 
 void setupPwmPin(uint8_t pin, uint8_t channel) {
@@ -153,7 +251,7 @@ void pwmWritePin(uint8_t pin, uint8_t channel, uint8_t duty) {
 }
 
 // ============================================================
-// 6. CONTROL DE MOTORES
+// 7. CONTROL DE MOTORES
 // ============================================================
 
 void setMotorRaw(uint8_t in1, uint8_t ch1,
@@ -209,7 +307,7 @@ void stopAllMotors() {
 }
 
 // ============================================================
-// 7. INTERFAZ WEB
+// 8. INTERFAZ WEB
 // ============================================================
 
 const char INDEX_HTML[] PROGMEM = R"HTML(
@@ -433,6 +531,9 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
     <div class="grid">
       <section class="card">
         <h2>Sensores IR - ADC crudo</h2>
+        <div class="badge" style="margin-bottom:10px;">
+          Activo ahora: <b id="activeSensor">...</b>
+        </div>
         <div class="sensor-grid">
           <div class="sensor">
             <div class="label">Frontal izquierdo</div>
@@ -452,8 +553,8 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
           </div>
         </div>
         <div class="hint">
-          En esta etapa se muestran valores ADC sin convertir a centimetros.
-          La conversion se agregara despues de calibrar cada sensor.
+          Los sensores se activan secuencialmente: nunca hay mas de un emisor IR activo.
+          Los valores mostrados son la ultima lectura valida de cada sensor.
         </div>
       </section>
 
@@ -642,6 +743,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
       document.getElementById('fr').textContent = data.ir.fr;
       document.getElementById('sl').textContent = data.ir.sl;
       document.getElementById('sr').textContent = data.ir.sr;
+      document.getElementById('activeSensor').textContent = data.ir.active;
 
       document.getElementById('encL').textContent = data.enc.left;
       document.getElementById('encR').textContent = data.enc.right;
@@ -679,7 +781,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
 )HTML";
 
 // ============================================================
-// 8. API HTTP
+// 9. API HTTP
 // ============================================================
 
 void handleRoot() {
@@ -687,11 +789,6 @@ void handleRoot() {
 }
 
 void handleStatus() {
-  int fl = analogRead(PIN_IR_FRONT_LEFT);
-  int fr = analogRead(PIN_IR_FRONT_RIGHT);
-  int sl = analogRead(PIN_IR_SIDE_LEFT);
-  int sr = analogRead(PIN_IR_SIDE_RIGHT);
-
   int32_t encL;
   int32_t encR;
 
@@ -705,10 +802,11 @@ void handleStatus() {
 
   json += "{";
   json += "\"ir\":{";
-  json += "\"fl\":" + String(fl) + ",";
-  json += "\"fr\":" + String(fr) + ",";
-  json += "\"sl\":" + String(sl) + ",";
-  json += "\"sr\":" + String(sr);
+  json += "\"fl\":" + String(irFrontLeft) + ",";
+  json += "\"fr\":" + String(irFrontRight) + ",";
+  json += "\"sl\":" + String(irSideLeft) + ",";
+  json += "\"sr\":" + String(irSideRight) + ",";
+  json += "\"active\":\"" + String(sensorName(activeSensor)) + "\"";
   json += "},";
 
   json += "\"enc\":{";
@@ -791,7 +889,7 @@ void handleNotFound() {
 }
 
 // ============================================================
-// 9. SETUP
+// 10. SETUP
 // ============================================================
 
 void setup() {
@@ -805,6 +903,15 @@ void setup() {
 
   // ADC
   analogReadResolution(12); // ESP32-S3: 0..4095
+
+  // Habilitacion individual de sensores Sharp (pin 5 / GPIO1 de cada sensor)
+  pinMode(PIN_IR_EN_FRONT_LEFT, OUTPUT);
+  pinMode(PIN_IR_EN_FRONT_RIGHT, OUTPUT);
+  pinMode(PIN_IR_EN_SIDE_LEFT, OUTPUT);
+  pinMode(PIN_IR_EN_SIDE_RIGHT, OUTPUT);
+
+  disableAllSensors();
+  activateOnlySensor(SENSOR_FRONT_LEFT);
 
   // PWM
   setupPwmPin(PIN_MOTOR_L_IN1, CH_L_IN1);
@@ -866,11 +973,12 @@ void setup() {
 }
 
 // ============================================================
-// 10. LOOP
+// 11. LOOP
 // ============================================================
 
 void loop() {
   server.handleClient();
+  updateSensorsSequential();
 
   bool anyMotorRunning =
     (motorLeftDir != DIR_STOP) ||
