@@ -112,3 +112,17 @@ Durante la prueba se observo que izquierda y derecha aparecian invertidas solame
 5. Seleccionar otro sensor y comprobar que la visual cambie.
 6. Probar **DETENER LECTURA**.
 7. Girar cada rueda manualmente y confirmar que el encoder aparece bajo el lado fisico correcto.
+
+
+## 8. Filtro de lectura de sensores
+
+Para estabilizar la lectura analogica de los GP2Y0E03 se usa:
+
+- 9 muestras ADC por lectura.
+- Mediana de esas 9 muestras para eliminar picos.
+- Suavizado exponencial posterior:
+  `filtrado = 0.75 * anterior + 0.25 * mediana`.
+
+La interfaz permite comparar el valor filtrado con la mediana instantanea (`Crudo`).
+
+El laberinto tiene celdas de hasta 25 x 25 cm. Cuando se calibre ADC a centimetros, las distancias superiores a 25 cm se trataran como ausencia de pared cercana. Por ahora no se recortan valores ADC porque la relacion ADC/distancia debe medirse primero sobre este robot.
