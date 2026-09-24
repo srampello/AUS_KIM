@@ -116,6 +116,26 @@ SensorIndex activeSensor = SENSOR_NONE;
 uint32_t sensorActivatedAtMs = 0;
 uint32_t sensorLastReadMs = 0;
 
+// ============================================================
+// 4. ESTADO DE MOTORES
+// ============================================================
+//
+// IMPORTANTE:
+// Este enum se declara antes de la primera funcion del sketch.
+// Arduino IDE genera prototipos automaticamente y, si MotorDir se declara
+// despues, puede producir el error: 'MotorDir' has not been declared.
+//
+enum MotorDir : int8_t {
+  DIR_REVERSE = -1,
+  DIR_STOP = 0,
+  DIR_FORWARD = 1
+};
+
+volatile MotorDir motorLeftDir = DIR_STOP;
+volatile MotorDir motorRightDir = DIR_STOP;
+volatile uint8_t motorLeftPwm = 0;
+volatile uint8_t motorRightPwm = 0;
+
 void disableAllSensors() {
   digitalWrite(PIN_IR_EN_FRONT_LEFT, LOW);
   digitalWrite(PIN_IR_EN_FRONT_RIGHT, LOW);
@@ -195,21 +215,6 @@ void updateSelectedSensor() {
       break;
   }
 }
-
-// ============================================================
-// 4. ESTADO DE MOTORES
-// ============================================================
-
-enum MotorDir : int8_t {
-  DIR_REVERSE = -1,
-  DIR_STOP = 0,
-  DIR_FORWARD = 1
-};
-
-volatile MotorDir motorLeftDir = DIR_STOP;
-volatile MotorDir motorRightDir = DIR_STOP;
-volatile uint8_t motorLeftPwm = 0;
-volatile uint8_t motorRightPwm = 0;
 
 // ============================================================
 // 5. ENCODERS
