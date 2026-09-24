@@ -95,7 +95,7 @@ Cuando se selecciona uno, el ESP32 ejecuta la lectura ADC solamente de ese canal
 
 Esto **no apaga fisicamente los otros sensores**, porque el Pin 5 (GPIO1) de los Sharp no esta conectado.
 
-## ADC
+## ADC y filtro de sensores
 
 El firmware usa resolucion de 12 bits y configura atenuacion de 11 dB en los cuatro pines analogicos:
 
@@ -103,6 +103,18 @@ El firmware usa resolucion de 12 bits y configura atenuacion de 11 dB en los cua
 analogReadResolution(12);
 analogSetPinAttenuation(..., ADC_11db);
 ```
+
+Para reducir ruido y picos se agrego un filtro de dos etapas:
+
+1. **Mediana de 9 muestras** para rechazar lecturas aisladas.
+2. **Suavizado exponencial** con 75% del valor anterior y 25% de la nueva mediana.
+
+La interfaz muestra:
+
+- valor grande: ADC filtrado;
+- valor `Crudo`: mediana instantanea antes del suavizado.
+
+Como cada celda del laberinto tiene un maximo de **25 x 25 cm**, durante la proxima etapa de calibracion vamos a convertir ADC a distancia y considerar cualquier lectura mayor a 25 cm como **sin pared cercana**. No se aplica todavia un corte por distancia porque primero necesitamos medir la curva real de estos sensores.
 
 ## Estructura
 
