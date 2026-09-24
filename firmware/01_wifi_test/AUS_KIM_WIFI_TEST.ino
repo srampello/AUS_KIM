@@ -4,7 +4,7 @@
  *
  * Objetivo:
  * - Crear una red Wi-Fi propia.
- * - Leer los 4 sensores IR en crudo (ADC).
+ * - Seleccionar y leer un sensor IR por vez en crudo (ADC).
  * - Probar cada motor por separado con PWM y sentido.
  * - Leer los encoders de cuadratura.
  * - Incluir STOP general y fail-safe por perdida de comunicacion.
@@ -42,9 +42,9 @@ const uint32_t PWM_FREQ = 20000; // 20 kHz: fuera del rango audible
 const uint8_t PWM_BITS = 8;      // 0..255
 
 // Sensores Sharp:
-// El usuario selecciona manualmente UN SOLO sensor desde la interfaz.
-// Al cambiar de sensor, se apagan los cuatro y se activa solamente el elegido.
-const uint32_t SENSOR_SETTLE_MS = 45;
+// El pin 5 (GPIO1) de los GP2Y0E03 NO esta conectado al ESP32.
+// Por eso no se encienden/apagan sensores por software.
+// La interfaz solo permite elegir CUAL sensor se lee y muestra.
 const uint32_t SENSOR_READ_INTERVAL_MS = 20;
 
 // Si al probar un motor "Adelante" gira al reves, cambiar false -> true.
@@ -65,13 +65,6 @@ const uint8_t PIN_IR_FRONT_LEFT  = 2;
 const uint8_t PIN_IR_FRONT_RIGHT = 1;
 const uint8_t PIN_IR_SIDE_LEFT   = 4;
 const uint8_t PIN_IR_SIDE_RIGHT  = 3;
-
-// GP2Y0E03 pin 5 (GPIO1): HIGH = activo, LOW = stand-by.
-// IMPORTANTE: para que el control funcione hay que cablear el pin 5 de cada sensor.
-const uint8_t PIN_IR_EN_FRONT_LEFT  = 15;
-const uint8_t PIN_IR_EN_FRONT_RIGHT = 16;
-const uint8_t PIN_IR_EN_SIDE_LEFT   = 17;
-const uint8_t PIN_IR_EN_SIDE_RIGHT  = 18;
 
 // DRV8833
 // Verificado fisicamente: los canales del DRV8833 estaban cruzados respecto al esquema original.
@@ -112,8 +105,7 @@ uint16_t irFrontRight = 0;
 uint16_t irSideLeft = 0;
 uint16_t irSideRight = 0;
 
-SensorIndex activeSensor = SENSOR_NONE;
-uint32_t sensorActivatedAtMs = 0;
+SensorIndex selectedSensor = SENSOR_NONE;
 uint32_t sensorLastReadMs = 0;
 
 // ============================================================
@@ -136,37 +128,9 @@ volatile MotorDir motorRightDir = DIR_STOP;
 volatile uint8_t motorLeftPwm = 0;
 volatile uint8_t motorRightPwm = 0;
 
-void disableAllSensors() {
-  digitalWrite(PIN_IR_EN_FRONT_LEFT, LOW);
-  digitalWrite(PIN_IR_EN_FRONT_RIGHT, LOW);
-  digitalWrite(PIN_IR_EN_SIDE_LEFT, LOW);
-  digitalWrite(PIN_IR_EN_SIDE_RIGHT, LOW);
-}
-
 void selectSensor(SensorIndex sensor) {
-  disableAllSensors();
-
-  activeSensor = sensor;
-  sensorActivatedAtMs = millis();
+  selectedSensor = sensor;
   sensorLastReadMs = 0;
-
-  switch (sensor) {
-    case SENSOR_FRONT_LEFT:
-      digitalWrite(PIN_IR_EN_FRONT_LEFT, HIGH);
-      break;
-    case SENSOR_FRONT_RIGHT:
-      digitalWrite(PIN_IR_EN_FRONT_RIGHT, HIGH);
-      break;
-    case SENSOR_SIDE_LEFT:
-      digitalWrite(PIN_IR_EN_SIDE_LEFT, HIGH);
-      break;
-    case SENSOR_SIDE_RIGHT:
-      digitalWrite(PIN_IR_EN_SIDE_RIGHT, HIGH);
-      break;
-    case SENSOR_NONE:
-    default:
-      break;
-  }
 }
 
 const char* sensorName(SensorIndex sensor) {
@@ -181,15 +145,11 @@ const char* sensorName(SensorIndex sensor) {
 }
 
 void updateSelectedSensor() {
-  if (activeSensor == SENSOR_NONE) {
+  if (selectedSensor == SENSOR_NONE) {
     return;
   }
 
   uint32_t now = millis();
-
-  if (now - sensorActivatedAtMs < SENSOR_SETTLE_MS) {
-    return;
-  }
 
   if (sensorLastReadMs != 0 && now - sensorLastReadMs < SENSOR_READ_INTERVAL_MS) {
     return;
@@ -197,7 +157,7 @@ void updateSelectedSensor() {
 
   sensorLastReadMs = now;
 
-  switch (activeSensor) {
+  switch (selectedSensor) {
     case SENSOR_FRONT_LEFT:
       irFrontLeft = analogRead(PIN_IR_FRONT_LEFT);
       break;
@@ -564,45 +524,45 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
 
     <div class="grid">
       <section class="card">
-        <h2>Sensores IR - seleccion manual</h2>
+        <h2>Sensores IR - seleccion de lectura</h2>
         <div class="badge" style="margin-bottom:10px;">
-          Sensor activo: <b id="activeSensor">NINGUNO</b>
+          Sensor seleccionado: <b id="selectedSensor">NINGUNO</b>
         </div>
 
         <div class="sensor-grid">
           <div class="sensor">
             <div class="label">Frontal izquierdo</div>
             <div class="value" id="fl">--</div>
-            <button class="sensor-btn" id="sensorFL" onclick="selectSensor('FL')">ACTIVAR</button>
+            <button class="sensor-btn" id="sensorFL" onclick="selectSensor('FL')">SELECCIONAR</button>
           </div>
 
           <div class="sensor">
             <div class="label">Frontal derecho</div>
             <div class="value" id="fr">--</div>
-            <button class="sensor-btn" id="sensorFR" onclick="selectSensor('FR')">ACTIVAR</button>
+            <button class="sensor-btn" id="sensorFR" onclick="selectSensor('FR')">SELECCIONAR</button>
           </div>
 
           <div class="sensor">
             <div class="label">Lateral izquierdo</div>
             <div class="value" id="sl">--</div>
-            <button class="sensor-btn" id="sensorLL" onclick="selectSensor('LL')">ACTIVAR</button>
+            <button class="sensor-btn" id="sensorLL" onclick="selectSensor('LL')">SELECCIONAR</button>
           </div>
 
           <div class="sensor">
             <div class="label">Lateral derecho</div>
             <div class="value" id="sr">--</div>
-            <button class="sensor-btn" id="sensorLR" onclick="selectSensor('LR')">ACTIVAR</button>
+            <button class="sensor-btn" id="sensorLR" onclick="selectSensor('LR')">SELECCIONAR</button>
           </div>
         </div>
 
         <div class="sensor-controls">
-          <button class="stop" onclick="selectSensor('OFF')">APAGAR SENSORES</button>
+          <button class="stop" onclick="selectSensor('OFF')">DETENER LECTURA</button>
           <button onclick="clearSensorValues()">LIMPIAR VALORES</button>
         </div>
 
         <div class="hint">
-          Elegis manualmente que Sharp queda activo. Al activar uno, los otros tres
-          pasan a stand-by. Solo el sensor seleccionado actualiza su lectura.
+          Elegis manualmente que Sharp queres leer. Los cuatro sensores siguen
+          alimentados fisicamente; el ESP32 solo consulta y muestra el seleccionado.
         </div>
       </section>
 
@@ -801,10 +761,10 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
     });
 
     if (map[active]) {
-      document.getElementById('activeSensor').textContent = map[active][0];
+      document.getElementById('selectedSensor').textContent = map[active][0];
       document.getElementById(map[active][2]).classList.add('active');
     } else {
-      document.getElementById('activeSensor').textContent = 'NINGUNO';
+      document.getElementById('selectedSensor').textContent = 'NINGUNO';
     }
   }
 
@@ -892,7 +852,7 @@ void handleStatus() {
   json += "\"fr\":" + String(irFrontRight) + ",";
   json += "\"sl\":" + String(irSideLeft) + ",";
   json += "\"sr\":" + String(irSideRight) + ",";
-  json += "\"active\":\"" + String(sensorName(activeSensor)) + "\"";
+  json += "\"active\":\"" + String(sensorName(selectedSensor)) + "\"";
   json += "},";
 
   json += "\"enc\":{";
@@ -973,7 +933,7 @@ void handleSensor() {
     return;
   }
 
-  server.send(200, "text/plain", sensorName(activeSensor));
+  server.send(200, "text/plain", sensorName(selectedSensor));
 }
 
 void handleStop() {
@@ -1015,14 +975,13 @@ void setup() {
 
   // ADC
   analogReadResolution(12); // ESP32-S3: 0..4095
+  analogSetPinAttenuation(PIN_IR_FRONT_LEFT, ADC_11db);
+  analogSetPinAttenuation(PIN_IR_FRONT_RIGHT, ADC_11db);
+  analogSetPinAttenuation(PIN_IR_SIDE_LEFT, ADC_11db);
+  analogSetPinAttenuation(PIN_IR_SIDE_RIGHT, ADC_11db);
 
-  // Habilitacion individual de sensores Sharp (pin 5 / GPIO1 de cada sensor)
-  pinMode(PIN_IR_EN_FRONT_LEFT, OUTPUT);
-  pinMode(PIN_IR_EN_FRONT_RIGHT, OUTPUT);
-  pinMode(PIN_IR_EN_SIDE_LEFT, OUTPUT);
-  pinMode(PIN_IR_EN_SIDE_RIGHT, OUTPUT);
-
-  disableAllSensors();
+  // Los Sharp se leen solo por Vout analogico.
+  // El pin 5 (GPIO1) de los sensores no esta conectado al ESP32.
   selectSensor(SENSOR_NONE);
 
   // PWM
