@@ -47,6 +47,19 @@ const uint8_t PWM_BITS = 8;      // 0..255
 // La interfaz solo permite elegir CUAL sensor se lee y muestra.
 const uint32_t SENSOR_READ_INTERVAL_MS = 20;
 
+// Filtro de sensores:
+// 1) Se toman 9 muestras rapidas.
+// 2) Se calcula la mediana para eliminar picos.
+// 3) Se aplica un suavizado exponencial equivalente a:
+//       filtrado = 75% valor anterior + 25% mediana nueva
+//
+// Como las celdas del laberinto son de hasta 25 x 25 cm, mas adelante,
+// cuando calibremos ADC -> cm, cualquier distancia > 25 cm podra tratarse
+// como "sin pared cercana". Por ahora filtramos ADC sin inventar una
+// conversion a centimetros.
+const uint8_t SENSOR_MEDIAN_SAMPLES = 9;
+const uint16_t SENSOR_SAMPLE_DELAY_US = 150;
+
 // Si al probar un motor "Adelante" gira al reves, cambiar false -> true.
 // Correcciones verificadas en el robot real:
 // - El motor fisico izquierdo esta conectado al canal IN3/IN4.
@@ -100,10 +113,20 @@ enum SensorIndex : int8_t {
   SENSOR_SIDE_RIGHT
 };
 
+uint16_t irFrontLeftRaw = 0;
+uint16_t irFrontRightRaw = 0;
+uint16_t irSideLeftRaw = 0;
+uint16_t irSideRightRaw = 0;
+
 uint16_t irFrontLeft = 0;
 uint16_t irFrontRight = 0;
 uint16_t irSideLeft = 0;
 uint16_t irSideRight = 0;
+
+bool irFrontLeftInit = false;
+bool irFrontRightInit = false;
+bool irSideLeftInit = false;
+bool irSideRightInit = false;
 
 SensorIndex selectedSensor = SENSOR_NONE;
 uint32_t sensorLastReadMs = 0;
@@ -131,6 +154,18 @@ volatile uint8_t motorRightPwm = 0;
 void selectSensor(SensorIndex sensor) {
   selectedSensor = sensor;
   sensorLastReadMs = 0;
+
+  // Al seleccionar un sensor reiniciamos su filtro para que no arrastre
+  // un valor viejo de una prueba anterior.
+  switch (sensor) {
+    case SENSOR_FRONT_LEFT:  irFrontLeftInit = false; break;
+    case SENSOR_FRONT_RIGHT: irFrontRightInit = false; break;
+    case SENSOR_SIDE_LEFT:   irSideLeftInit = false; break;
+    case SENSOR_SIDE_RIGHT:  irSideRightInit = false; break;
+    case SENSOR_NONE:
+    default:
+      break;
+  }
 }
 
 const char* sensorName(SensorIndex sensor) {
@@ -142,6 +177,42 @@ const char* sensorName(SensorIndex sensor) {
     case SENSOR_NONE:
     default:                 return "OFF";
   }
+}
+
+uint16_t readMedianADC(uint8_t pin) {
+  uint16_t samples[SENSOR_MEDIAN_SAMPLES];
+
+  for (uint8_t i = 0; i < SENSOR_MEDIAN_SAMPLES; i++) {
+    samples[i] = analogRead(pin);
+    delayMicroseconds(SENSOR_SAMPLE_DELAY_US);
+  }
+
+  // Ordenamiento simple por insercion. Con 9 muestras es rapido y liviano.
+  for (uint8_t i = 1; i < SENSOR_MEDIAN_SAMPLES; i++) {
+    uint16_t key = samples[i];
+    int8_t j = i - 1;
+
+    while (j >= 0 && samples[j] > key) {
+      samples[j + 1] = samples[j];
+      j--;
+    }
+    samples[j + 1] = key;
+  }
+
+  return samples[SENSOR_MEDIAN_SAMPLES / 2];
+}
+
+uint16_t applySensorFilter(uint16_t medianValue,
+                           uint16_t previousFiltered,
+                           bool &initialized) {
+  if (!initialized) {
+    initialized = true;
+    return medianValue;
+  }
+
+  // EMA alpha = 0.25, usando enteros:
+  // nuevo = (3 * anterior + nueva_mediana) / 4
+  return (uint16_t)(((uint32_t)previousFiltered * 3UL + medianValue) / 4UL);
 }
 
 void updateSelectedSensor() {
@@ -159,17 +230,25 @@ void updateSelectedSensor() {
 
   switch (selectedSensor) {
     case SENSOR_FRONT_LEFT:
-      irFrontLeft = analogRead(PIN_IR_FRONT_LEFT);
+      irFrontLeftRaw = readMedianADC(PIN_IR_FRONT_LEFT);
+      irFrontLeft = applySensorFilter(irFrontLeftRaw, irFrontLeft, irFrontLeftInit);
       break;
+
     case SENSOR_FRONT_RIGHT:
-      irFrontRight = analogRead(PIN_IR_FRONT_RIGHT);
+      irFrontRightRaw = readMedianADC(PIN_IR_FRONT_RIGHT);
+      irFrontRight = applySensorFilter(irFrontRightRaw, irFrontRight, irFrontRightInit);
       break;
+
     case SENSOR_SIDE_LEFT:
-      irSideLeft = analogRead(PIN_IR_SIDE_LEFT);
+      irSideLeftRaw = readMedianADC(PIN_IR_SIDE_LEFT);
+      irSideLeft = applySensorFilter(irSideLeftRaw, irSideLeft, irSideLeftInit);
       break;
+
     case SENSOR_SIDE_RIGHT:
-      irSideRight = analogRead(PIN_IR_SIDE_RIGHT);
+      irSideRightRaw = readMedianADC(PIN_IR_SIDE_RIGHT);
+      irSideRight = applySensorFilter(irSideRightRaw, irSideRight, irSideRightInit);
       break;
+
     case SENSOR_NONE:
     default:
       break;
@@ -533,24 +612,28 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
           <div class="sensor">
             <div class="label">Frontal izquierdo</div>
             <div class="value" id="fl">--</div>
+            <div class="enc-ab">Crudo: <b id="flRaw">--</b></div>
             <button class="sensor-btn" id="sensorFL" onclick="selectSensor('FL')">SELECCIONAR</button>
           </div>
 
           <div class="sensor">
             <div class="label">Frontal derecho</div>
             <div class="value" id="fr">--</div>
+            <div class="enc-ab">Crudo: <b id="frRaw">--</b></div>
             <button class="sensor-btn" id="sensorFR" onclick="selectSensor('FR')">SELECCIONAR</button>
           </div>
 
           <div class="sensor">
             <div class="label">Lateral izquierdo</div>
             <div class="value" id="sl">--</div>
+            <div class="enc-ab">Crudo: <b id="slRaw">--</b></div>
             <button class="sensor-btn" id="sensorLL" onclick="selectSensor('LL')">SELECCIONAR</button>
           </div>
 
           <div class="sensor">
             <div class="label">Lateral derecho</div>
             <div class="value" id="sr">--</div>
+            <div class="enc-ab">Crudo: <b id="srRaw">--</b></div>
             <button class="sensor-btn" id="sensorLR" onclick="selectSensor('LR')">SELECCIONAR</button>
           </div>
         </div>
@@ -561,8 +644,9 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
         </div>
 
         <div class="hint">
-          Elegis manualmente que Sharp queres leer. Los cuatro sensores siguen
-          alimentados fisicamente; el ESP32 solo consulta y muestra el seleccionado.
+          El numero grande es el ADC filtrado (mediana de 9 muestras + suavizado).
+          "Crudo" muestra la mediana instantanea. Los cuatro Sharp siguen alimentados;
+          el ESP32 solo consulta el seleccionado.
         </div>
       </section>
 
@@ -742,6 +826,10 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
     document.getElementById('fr').textContent = '--';
     document.getElementById('sl').textContent = '--';
     document.getElementById('sr').textContent = '--';
+    document.getElementById('flRaw').textContent = '--';
+    document.getElementById('frRaw').textContent = '--';
+    document.getElementById('slRaw').textContent = '--';
+    document.getElementById('srRaw').textContent = '--';
   }
 
   function setActiveSensorUi(active) {
@@ -756,7 +844,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
       document.getElementById(id).classList.remove('active');
     });
 
-    ['fl', 'fr', 'sl', 'sr'].forEach(id => {
+    ['fl', 'fr', 'sl', 'sr', 'flRaw', 'frRaw', 'slRaw', 'srRaw'].forEach(id => {
       document.getElementById(id).textContent = '--';
     });
 
@@ -785,10 +873,22 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
 
       setActiveSensorUi(data.ir.active);
 
-      if (data.ir.active === 'FL') document.getElementById('fl').textContent = data.ir.fl;
-      if (data.ir.active === 'FR') document.getElementById('fr').textContent = data.ir.fr;
-      if (data.ir.active === 'LL') document.getElementById('sl').textContent = data.ir.sl;
-      if (data.ir.active === 'LR') document.getElementById('sr').textContent = data.ir.sr;
+      if (data.ir.active === 'FL') {
+        document.getElementById('fl').textContent = data.ir.fl;
+        document.getElementById('flRaw').textContent = data.ir.flRaw;
+      }
+      if (data.ir.active === 'FR') {
+        document.getElementById('fr').textContent = data.ir.fr;
+        document.getElementById('frRaw').textContent = data.ir.frRaw;
+      }
+      if (data.ir.active === 'LL') {
+        document.getElementById('sl').textContent = data.ir.sl;
+        document.getElementById('slRaw').textContent = data.ir.slRaw;
+      }
+      if (data.ir.active === 'LR') {
+        document.getElementById('sr').textContent = data.ir.sr;
+        document.getElementById('srRaw').textContent = data.ir.srRaw;
+      }
 
       // Correccion SOLO VISUAL: el cableado de los encoders no se modifica.
       document.getElementById('encL').textContent = data.enc.right;
@@ -852,6 +952,10 @@ void handleStatus() {
   json += "\"fr\":" + String(irFrontRight) + ",";
   json += "\"sl\":" + String(irSideLeft) + ",";
   json += "\"sr\":" + String(irSideRight) + ",";
+  json += "\"flRaw\":" + String(irFrontLeftRaw) + ",";
+  json += "\"frRaw\":" + String(irFrontRightRaw) + ",";
+  json += "\"slRaw\":" + String(irSideLeftRaw) + ",";
+  json += "\"srRaw\":" + String(irSideRightRaw) + ",";
   json += "\"active\":\"" + String(sensorName(selectedSensor)) + "\"";
   json += "},";
 
