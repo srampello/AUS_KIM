@@ -28,10 +28,10 @@ La interfaz web permite probar motores, encoders y sensores de forma independien
 - ADELANTE / ATRAS mientras se mantiene presionado.
 - STOP general y fail-safe.
 - Lectura de encoders con canales A/B.
-- Correccion izquierda/derecha de encoders **solo en la interfaz**.
-- Seleccion manual de los Sharp.
-- Solo un sensor Sharp puede permanecer activo a la vez.
-- Boton para apagar todos los sensores.
+- Correccion izquierda/derecha de encoders solo en la interfaz.
+- Seleccion manual de cual Sharp leer.
+- Los otros Sharp dejan de mostrarse, pero siguen alimentados fisicamente.
+- Opcion para detener la lectura de sensores.
 
 ## Pinout
 
@@ -44,14 +44,19 @@ La interfaz web permite probar motores, encoders y sensores de forma independien
 | Lateral izquierdo | 4 |
 | Lateral derecho | 3 |
 
-### Sharp - Pin 5 GPIO1 / Enable
+### Sharp - cableado usado
 
-| Sensor | GPIO ESP32-S3 |
-|---|---:|
-| Frontal izquierdo | 15 |
-| Frontal derecho | 16 |
-| Lateral izquierdo | 17 |
-| Lateral derecho | 18 |
+Para cada GP2Y0E03:
+
+- VDD -> 3.3 V
+- Vout -> GPIO analogico correspondiente
+- GND -> GND
+- VIN(IO) -> 3.3 V
+- GPIO1 / Pin 5 -> **sin conectar**
+- SCL -> sin conectar
+- SDA -> sin conectar
+
+No se utilizan GPIO 15, 16, 17 ni 18 para los sensores.
 
 ### Motores
 
@@ -68,32 +73,36 @@ El motor fisico izquierdo requiere inversion de sentido por software.
 
 | Conexion | GPIO |
 |---|---:|
-| Encoder A del primer par | 9 |
-| Encoder B del primer par | 10 |
-| Encoder A del segundo par | 11 |
-| Encoder B del segundo par | 12 |
+| Encoder A primer par | 9 |
+| Encoder B primer par | 10 |
+| Encoder A segundo par | 11 |
+| Encoder B segundo par | 12 |
 
-La interfaz intercambia solamente la presentacion izquierda/derecha de esos datos. No se modifico el cableado.
+La interfaz intercambia solamente la presentacion izquierda/derecha de esos datos.
 
 ## Seleccion manual de sensores
 
-Al iniciar, los cuatro Sharp quedan apagados. En el panel aparecen cuatro botones:
+En el panel aparecen cuatro botones:
 
 ```text
-[ ACTIVAR Frontal izquierdo ]   [ ACTIVAR Frontal derecho ]
-[ ACTIVAR Lateral izquierdo ]   [ ACTIVAR Lateral derecho ]
+[ SELECCIONAR Frontal izquierdo ]   [ SELECCIONAR Frontal derecho ]
+[ SELECCIONAR Lateral izquierdo ]   [ SELECCIONAR Lateral derecho ]
 
-              [ APAGAR SENSORES ]
+                    [ DETENER LECTURA ]
 ```
 
-Cuando se pulsa un sensor:
+Cuando se selecciona uno, el ESP32 ejecuta la lectura ADC solamente de ese canal y la interfaz muestra unicamente ese valor.
 
-1. se apagan los cuatro,
-2. se activa solamente el seleccionado,
-3. se espera el tiempo de estabilizacion,
-4. se muestra y actualiza unicamente esa lectura.
+Esto **no apaga fisicamente los otros sensores**, porque el Pin 5 (GPIO1) de los Sharp no esta conectado.
 
-Para esto, el Pin 5 (GPIO1) de cada GP2Y0E03 debe estar conectado a GPIO 15, 16, 17 y 18 del ESP32-S3.
+## ADC
+
+El firmware usa resolucion de 12 bits y configura atenuacion de 11 dB en los cuatro pines analogicos:
+
+```cpp
+analogReadResolution(12);
+analogSetPinAttenuation(..., ADC_11db);
+```
 
 ## Estructura
 
@@ -115,9 +124,9 @@ git pull origin master
 
 ## Proximo paso
 
-1. Validar los cuatro botones de sensores.
+1. Validar los cuatro canales Sharp individualmente.
 2. Confirmar la visualizacion correcta de ambos encoders.
-3. Calibrar los Sharp.
+3. Calibrar los Sharp con distancias conocidas.
 4. Medir velocidad de ruedas.
 5. Implementar PID.
 6. Movimiento recto y giros.
