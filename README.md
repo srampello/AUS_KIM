@@ -144,3 +144,49 @@ git pull origin master
 6. Movimiento recto y giros.
 7. Seguimiento de pared.
 8. Navegacion del laberinto.
+
+
+## Etapa 02 - Seguimiento de pared derecha
+
+Se agrego:
+
+```text
+firmware/02_wall_follow/AUS_KIM_WALL_FOLLOW.ino
+```
+
+Esta version:
+
+- usa solamente el Sharp lateral derecho;
+- no usa encoders;
+- mantiene una referencia inicial de ~6 cm (`ADC = 2400`);
+- ejecuta el PID a 100 Hz;
+- permite modificar desde la interfaz web `Kp`, `Ki`, `Kd`, objetivo ADC, PWM base, correccion maxima y umbral minimo de pared;
+- muestra ADC filtrado, mediana, error, correccion y PWM de ambos motores;
+- incorpora START, STOP y fail-safe por perdida de comunicacion web.
+
+Red Wi-Fi:
+
+- SSID: `AUS_KIM_WALL`
+- Clave: `AUSKIM2026`
+- Panel: `http://192.168.4.1`
+
+Valores iniciales de prueba:
+
+```text
+Kp              = 0.12
+Ki              = 0.00
+Kd              = 0.35
+Objetivo ADC    = 2400
+PWM base        = 80
+Correccion max. = 60
+Pared minima    = 1500
+```
+
+La mezcla de motores es:
+
+```text
+Motor izquierdo = PWM base - correccion
+Motor derecho   = PWM base + correccion
+```
+
+Como ADC alto significa pared mas cercana, una correccion positiva aleja el robot de la pared derecha.
