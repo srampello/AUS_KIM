@@ -652,7 +652,8 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
 
       <div class="hint">
         Estos valores son solo de diagnostico. No modifican el PID ni el control
-        de pared. Si un encoder funciona, el contador debe cambiar al mover la rueda.
+        de pared. La visualizacion esta corregida para que cada contador corresponda
+        a su rueda fisica y avanzar sume en ambos encoders.
       </div>
     </section>
 
@@ -751,12 +752,18 @@ void handleRoot() {
 }
 
 void handleStatus() {
-  int32_t encL;
-  int32_t encR;
+  int32_t encPhysicalLeft;
+  int32_t encPhysicalRight;
 
   noInterrupts();
-  encL = encoderLeft;
-  encR = encoderRight;
+  // Prueba fisica:
+  // - rueda izquierda hacia adelante -> suma el contador nativo "right"
+  // - rueda derecha hacia adelante   -> resta el contador nativo "left"
+  //
+  // Corrigimos SOLO la telemetria para mostrar rueda fisica correcta
+  // y hacer que "adelante" sea positivo en ambas.
+  encPhysicalLeft = encoderRight;
+  encPhysicalRight = -encoderLeft;
   interrupts();
 
   String json;
@@ -785,12 +792,16 @@ void handleStatus() {
   json += "},";
 
   json += "\"enc\":{";
-  json += "\"left\":" + String(encL) + ",";
-  json += "\"right\":" + String(encR) + ",";
-  json += "\"la\":" + String(digitalRead(PIN_ENC_L_A)) + ",";
-  json += "\"lb\":" + String(digitalRead(PIN_ENC_L_B)) + ",";
-  json += "\"ra\":" + String(digitalRead(PIN_ENC_R_A)) + ",";
-  json += "\"rb\":" + String(digitalRead(PIN_ENC_R_B));
+  json += "\"left\":" + String(encPhysicalLeft) + ",";
+  json += "\"right\":" + String(encPhysicalRight) + ",";
+
+  // Los canales A/B tambien se presentan segun la rueda fisica.
+  // GPIO11/12 pertenecen a la rueda izquierda fisica.
+  // GPIO9/10 pertenecen a la rueda derecha fisica.
+  json += "\"la\":" + String(digitalRead(PIN_ENC_R_A)) + ",";
+  json += "\"lb\":" + String(digitalRead(PIN_ENC_R_B)) + ",";
+  json += "\"ra\":" + String(digitalRead(PIN_ENC_L_A)) + ",";
+  json += "\"rb\":" + String(digitalRead(PIN_ENC_L_B));
   json += "},";
 
   json += "\"config\":{";
