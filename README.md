@@ -190,3 +190,41 @@ Motor derecho   = PWM base + correccion
 ```
 
 Como ADC alto significa pared mas cercana, una correccion positiva aleja el robot de la pared derecha.
+
+
+## Etapa 04 - Maze Solver
+
+Se agrego:
+
+```text
+firmware/04_maze_solver/AUS_KIM_MAZE_SOLVER.ino
+```
+
+Esta version implementa una navegacion tipo **regla de la mano derecha**:
+
+1. Si detecta una apertura a la derecha, la prioriza.
+2. Si encuentra pared frontal:
+   - gira a la izquierda si ese lateral esta libre;
+   - si tambien esta bloqueado, realiza un giro de 180 grados.
+3. En recta sigue la pared derecha con PID.
+
+Los cuatro sensores Sharp se leen en tiempo real y la interfaz muestra:
+
+- frontal izquierdo y derecho;
+- lateral izquierdo y derecho;
+- ADC filtrado y crudo;
+- deteccion de pared/apertura;
+- estado actual del robot;
+- error y correccion PID;
+- PWM firmado de ambos motores;
+- telemetria de ambos encoders.
+
+Los giros son temporizados porque el encoder derecho todavia no es confiable. Desde la interfaz pueden ajustarse PID, velocidad base, correccion maxima, umbrales de sensores, PWM de giro y todos los tiempos de maniobra.
+
+Red:
+
+```text
+SSID: AUS_KIM_MAZE
+Clave: AUSKIM2026
+Panel: http://192.168.4.1
+```
