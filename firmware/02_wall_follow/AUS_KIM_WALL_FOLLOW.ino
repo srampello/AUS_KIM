@@ -9,7 +9,8 @@
  * - Motor fisico derecho   -> IN1/IN2 -> GPIO 5/6
  *
  * IMPORTANTE:
- * - No se usan encoders en esta etapa.
+ * - Los encoders se leen solo para diagnostico/telemetria.
+ * - NO intervienen en el control de pared ni en el PID.
  * - Los 4 Sharp pueden permanecer activos fisicamente.
  * - El control usa solamente el Sharp lateral derecho.
  *
@@ -71,6 +72,12 @@ const uint8_t PIN_MOTOR_L_IN2 = 8; // IN4
 const uint8_t PIN_MOTOR_R_IN1 = 5; // IN1
 const uint8_t PIN_MOTOR_R_IN2 = 6; // IN2
 
+// Encoders - solo diagnostico en esta etapa
+const uint8_t PIN_ENC_L_A = 9;
+const uint8_t PIN_ENC_L_B = 10;
+const uint8_t PIN_ENC_R_A = 11;
+const uint8_t PIN_ENC_R_B = 12;
+
 const bool INVERT_MOTOR_LEFT = true;
 const bool INVERT_MOTOR_RIGHT = false;
 
@@ -121,6 +128,37 @@ int motorRightCmd = 0;
 
 uint32_t lastControlMs = 0;
 uint32_t lastHeartbeatMs = 0;
+
+// Encoders - lectura x4, solo telemetria
+volatile int32_t encoderLeft = 0;
+volatile int32_t encoderRight = 0;
+volatile uint8_t lastStateLeft = 0;
+volatile uint8_t lastStateRight = 0;
+
+const int8_t QUAD_TABLE[16] = {
+   0, -1,  1,  0,
+   1,  0,  0, -1,
+  -1,  0,  0,  1,
+   0,  1, -1,  0
+};
+
+void IRAM_ATTR updateEncoderLeft() {
+  uint8_t a = digitalRead(PIN_ENC_L_A);
+  uint8_t b = digitalRead(PIN_ENC_L_B);
+  uint8_t current = (a << 1) | b;
+  uint8_t index = (lastStateLeft << 2) | current;
+  encoderLeft += QUAD_TABLE[index];
+  lastStateLeft = current;
+}
+
+void IRAM_ATTR updateEncoderRight() {
+  uint8_t a = digitalRead(PIN_ENC_R_A);
+  uint8_t b = digitalRead(PIN_ENC_R_B);
+  uint8_t current = (a << 1) | b;
+  uint8_t index = (lastStateRight << 2) | current;
+  encoderRight += QUAD_TABLE[index];
+  lastStateRight = current;
+}
 
 // ============================================================
 // 4. PWM / MOTORES
@@ -593,6 +631,31 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
       </div>
     </section>
 
+    <section class="card">
+      <h2>Encoders - diagnostico en tiempo real</h2>
+
+      <div class="metric-grid">
+        <div class="metric">
+          <div class="label">Encoder izquierdo</div>
+          <div class="value" id="encLeft">0</div>
+          <div class="label">A: <b id="encLA">0</b> | B: <b id="encLB">0</b></div>
+        </div>
+
+        <div class="metric">
+          <div class="label">Encoder derecho</div>
+          <div class="value" id="encRight">0</div>
+          <div class="label">A: <b id="encRA">0</b> | B: <b id="encRB">0</b></div>
+        </div>
+      </div>
+
+      <button class="full" onclick="resetEncoders()">RESET ENCODERS</button>
+
+      <div class="hint">
+        Estos valores son solo de diagnostico. No modifican el PID ni el control
+        de pared. Si un encoder funciona, el contador debe cambiar al mover la rueda.
+      </div>
+    </section>
+
   </div>
 </div>
 
@@ -619,6 +682,11 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
     await updateStatus();
   }
 
+  async function resetEncoders() {
+    await fetch('/api/reset_encoders', { cache:'no-store' });
+    await updateStatus();
+  }
+
   async function updateStatus() {
     try {
       const r = await fetch('/api/status', { cache:'no-store' });
@@ -635,6 +703,13 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
       document.getElementById('motorLeft').textContent = d.motor.left;
       document.getElementById('motorRight').textContent = d.motor.right;
       document.getElementById('wall').textContent = d.wallDetected ? 'SI' : 'NO';
+
+      document.getElementById('encLeft').textContent = d.enc.left;
+      document.getElementById('encRight').textContent = d.enc.right;
+      document.getElementById('encLA').textContent = d.enc.la;
+      document.getElementById('encLB').textContent = d.enc.lb;
+      document.getElementById('encRA').textContent = d.enc.ra;
+      document.getElementById('encRB').textContent = d.enc.rb;
 
       if (firstConfigLoad) {
         document.getElementById('kp').value = d.config.kp;
@@ -676,8 +751,16 @@ void handleRoot() {
 }
 
 void handleStatus() {
+  int32_t encL;
+  int32_t encR;
+
+  noInterrupts();
+  encL = encoderLeft;
+  encR = encoderRight;
+  interrupts();
+
   String json;
-  json.reserve(600);
+  json.reserve(760);
 
   json += "{";
 
@@ -699,6 +782,15 @@ void handleStatus() {
   json += "\"motor\":{";
   json += "\"left\":" + String(motorLeftCmd) + ",";
   json += "\"right\":" + String(motorRightCmd);
+  json += "},";
+
+  json += "\"enc\":{";
+  json += "\"left\":" + String(encL) + ",";
+  json += "\"right\":" + String(encR) + ",";
+  json += "\"la\":" + String(digitalRead(PIN_ENC_L_A)) + ",";
+  json += "\"lb\":" + String(digitalRead(PIN_ENC_L_B)) + ",";
+  json += "\"ra\":" + String(digitalRead(PIN_ENC_R_A)) + ",";
+  json += "\"rb\":" + String(digitalRead(PIN_ENC_R_B));
   json += "},";
 
   json += "\"config\":{";
@@ -770,6 +862,15 @@ void handlePing() {
   server.send(200, "text/plain", "OK");
 }
 
+void handleResetEncoders() {
+  noInterrupts();
+  encoderLeft = 0;
+  encoderRight = 0;
+  interrupts();
+
+  server.send(200, "text/plain", "OK");
+}
+
 void handleStop() {
   running = false;
   stopMotors();
@@ -799,6 +900,25 @@ void setup() {
 
   stopMotors();
 
+  // Encoders: solo lectura para diagnostico
+  pinMode(PIN_ENC_L_A, INPUT);
+  pinMode(PIN_ENC_L_B, INPUT);
+  pinMode(PIN_ENC_R_A, INPUT);
+  pinMode(PIN_ENC_R_B, INPUT);
+
+  lastStateLeft =
+    (digitalRead(PIN_ENC_L_A) << 1) |
+    digitalRead(PIN_ENC_L_B);
+
+  lastStateRight =
+    (digitalRead(PIN_ENC_R_A) << 1) |
+    digitalRead(PIN_ENC_R_B);
+
+  attachInterrupt(digitalPinToInterrupt(PIN_ENC_L_A), updateEncoderLeft, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PIN_ENC_L_B), updateEncoderLeft, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PIN_ENC_R_A), updateEncoderRight, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(PIN_ENC_R_B), updateEncoderRight, CHANGE);
+
   WiFi.mode(WIFI_AP);
   WiFi.softAPConfig(localIP, gateway, subnet);
   WiFi.softAP(WIFI_SSID, WIFI_PASS);
@@ -808,6 +928,7 @@ void setup() {
   server.on("/api/run", HTTP_GET, handleRun);
   server.on("/api/config", HTTP_GET, handleConfig);
   server.on("/api/ping", HTTP_GET, handlePing);
+  server.on("/api/reset_encoders", HTTP_GET, handleResetEncoders);
   server.on("/api/stop", HTTP_ANY, handleStop);
   server.onNotFound(handleNotFound);
 
