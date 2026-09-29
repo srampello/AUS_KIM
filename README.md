@@ -235,7 +235,7 @@ Panel: http://192.168.4.1
 Se agrego:
 
 ```text
-firmware/05_test_suite/AUS_KIM_TEST_SUITE.ino
+firmware/05_test_suite/AUS_KIM_TEST_SUITE/AUS_KIM_TEST_SUITE.ino
 ```
 
 Esta version concentra todas las pruebas principales en una sola interfaz web con tres pestañas:
