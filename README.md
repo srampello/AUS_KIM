@@ -228,3 +228,50 @@ SSID: AUS_KIM_MAZE
 Clave: AUSKIM2026
 Panel: http://192.168.4.1
 ```
+
+
+## Etapa 05 - Test Suite unificado
+
+Se agrego:
+
+```text
+firmware/05_test_suite/AUS_KIM_TEST_SUITE.ino
+```
+
+Esta version concentra todas las pruebas principales en una sola interfaz web con tres pestañas:
+
+1. **Sensores / Motores / Encoders**
+   - lectura en vivo de los 4 Sharp;
+   - valor filtrado y crudo;
+   - prueba manual independiente de cada motor;
+   - PWM manual;
+   - lectura de encoders y estados A/B;
+   - reset de encoders.
+
+2. **PID pared derecha**
+   - seguimiento de pared derecha;
+   - ajuste en vivo de Kp, Ki y Kd;
+   - objetivo ADC;
+   - PWM base;
+   - correccion maxima;
+   - telemetria de sensores, motores, error y correccion.
+
+3. **Resolver laberinto**
+   - regla de la mano derecha;
+   - deteccion frontal;
+   - deteccion de aperturas laterales;
+   - giro derecha, izquierda y 180 grados;
+   - ajuste en vivo de umbrales, PWM y tiempos de maniobra;
+   - telemetria completa.
+
+Los encoders siguen siendo solo de diagnostico y no intervienen en el PID ni en los giros.
+
+Red Wi-Fi:
+
+```text
+SSID: AUS_KIM_TEST
+Clave: AUSKIM2026
+Panel: http://192.168.4.1
+```
+
+Al cambiar de pestaña/modo, el firmware detiene los motores por seguridad. Tambien mantiene un fail-safe de comunicacion web.
