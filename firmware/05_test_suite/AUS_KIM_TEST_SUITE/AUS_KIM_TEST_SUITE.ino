@@ -112,7 +112,8 @@ enum RunMode : uint8_t {
 enum RobotState : uint8_t {
   STATE_STOPPED = 0,
   STATE_FOLLOW,
-  STATE_PRE_RIGHT,
+  STATE_BRAKE,       // Frenado antes de decidir frente a una pared
+  STATE_PRE_RIGHT,   // Avance corto para centrar una apertura derecha
   STATE_TURN_RIGHT,
   STATE_TURN_LEFT,
   STATE_UTURN,
@@ -126,23 +127,27 @@ struct SensorData {
 };
 
 struct ControlConfig {
-  // PID pared derecha
-  float kp = 0.10f;
+  // PID pared derecha - calibracion AUS_KIM 30/09/2026
+  float kp = 0.08f;
   float ki = 0.0f;
-  float kd = 0.15f;
+  float kd = 0.80f;
 
-  int targetRightAdc = 2400;  // ~6 cm
-  int basePwm = 70;
-  int maxCorrection = 55;
+  int targetRightAdc = 2300;
+  int basePwm = 155;
+  int maxCorrection = 60;
 
   // Deteccion de laberinto
-  int frontWallAdc = 2200;
+  // frontWallAdc es el umbral de STOP frontal; antes de llegar se desacelera.
+  int frontWallAdc = 2300;
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
 
-  // Giros temporizados
+  // Maniobras. Los angulos ya NO se determinan por tiempo:
+  // se miden con TURN_90_TICKS / TURN_180_TICKS.
   int turnPwm = 75;
   int rightAdvanceMs = 140;
+  // Campos legacy conservados por compatibilidad con la interfaz actual.
+  // No se usan para finalizar giros del Maze Solver.
   int rightTurnMs = 310;
   int leftTurnMs = 310;
   int uTurnMs = 620;
@@ -154,6 +159,28 @@ struct ControlConfig {
 };
 
 ControlConfig cfg;
+
+// ============================================================
+// CALIBRACION DE MOVIMIENTO / ENCODERS
+// ============================================================
+// Recta medida: 20 cm = promedio 419 ticks -> 20.95 ticks/cm.
+// Giros medidos repetidamente por suma de recorridos absolutos:
+// 90 grados ~= 251 ticks totales; 180 grados ~= 501 ticks totales.
+const float TICKS_PER_CM = 20.95f;
+const uint16_t TURN_90_TICKS = 251;
+const uint16_t TURN_180_TICKS = 501;
+
+// Aproximacion a pared frontal.
+// FRONT_SLOW_ADC: comienza a desacelerar.
+// cfg.frontWallAdc: se detiene completamente y decide.
+const uint16_t FRONT_SLOW_ADC = 2050;
+const int APPROACH_MIN_PWM = 75;
+
+// En el ultimo 25 % del giro baja PWM para reducir sobrepaso por inercia.
+const int TURN_SLOW_PWM = 45;
+
+// Pausa mecanica tras frenar frente a una pared.
+const uint16_t BRAKE_SETTLE_MS = 80;
 
 // ============================================================
 // 4. ESTADO GLOBAL
@@ -182,6 +209,10 @@ float correctionPid = 0.0f;
 
 int motorLeftCmd = 0;   // signed
 int motorRightCmd = 0;  // signed
+
+// Posicion fisica de encoders al iniciar una maniobra de giro.
+int32_t moveStartLeft = 0;
+int32_t moveStartRight = 0;
 
 // Encoders nativos
 volatile int32_t encoderLeft = 0;
@@ -305,6 +336,30 @@ void stopMotors() {
   setDrive(0, 0);
 }
 
+// Devuelve los encoders corregidos para las ruedas fisicas.
+// La correccion coincide con la telemetria ya verificada en AUS_KIM.
+void readPhysicalEncoders(int32_t &left, int32_t &right) {
+  noInterrupts();
+  left = encoderRight;
+  right = -encoderLeft;
+  interrupts();
+}
+
+void captureMoveStart() {
+  readPhysicalEncoders(moveStartLeft, moveStartRight);
+}
+
+uint32_t getMoveTicksSum() {
+  int32_t left;
+  int32_t right;
+  readPhysicalEncoders(left, right);
+
+  uint32_t deltaLeft = (uint32_t)abs(left - moveStartLeft);
+  uint32_t deltaRight = (uint32_t)abs(right - moveStartRight);
+
+  return deltaLeft + deltaRight;
+}
+
 // ============================================================
 // 7. SENSORES
 // ============================================================
@@ -358,6 +413,11 @@ void updateAllSensors() {
   leftOpen  = sLL.filtered < cfg.leftOpenAdc;
 }
 
+// Para aproximacion frontal usamos el sensor que ve la pared mas cerca.
+uint16_t getFrontAdc() {
+  return max(sFL.filtered, sFR.filtered);
+}
+
 // ============================================================
 // 8. PID
 // ============================================================
@@ -370,7 +430,7 @@ void resetPid() {
   correctionPid = 0.0f;
 }
 
-void followRightWall() {
+void followRightWallAtPwm(int basePwm) {
   errorPid = (float)sLR.filtered - (float)cfg.targetRightAdc;
 
   integralPid += errorPid;
@@ -389,15 +449,45 @@ void followRightWall() {
     (float)cfg.maxCorrection
   );
 
-  int leftPwm  = cfg.basePwm - (int)correctionPid;
-  int rightPwm = cfg.basePwm + (int)correctionPid;
+  // En seguimiento de pared ambas ruedas siempre permanecen hacia adelante.
+  int leftPwm  = basePwm - (int)correctionPid;
+  int rightPwm = basePwm + (int)correctionPid;
 
-  leftPwm  = constrain(leftPwm, 0, 255);
-  rightPwm = constrain(rightPwm, 0, 255);
+  leftPwm  = constrain(leftPwm, 1, 255);
+  rightPwm = constrain(rightPwm, 1, 255);
 
   setDrive(leftPwm, rightPwm);
 
   prevErrorPid = errorPid;
+}
+
+void followRightWall() {
+  followRightWallAtPwm(cfg.basePwm);
+}
+
+int calculateApproachPwm() {
+  uint16_t front = getFrontAdc();
+
+  if (front <= FRONT_SLOW_ADC) {
+    return cfg.basePwm;
+  }
+
+  if (front >= cfg.frontWallAdc) {
+    return 0;
+  }
+
+  // Evita que una configuracion de PWM base baja sea aumentada al frenar.
+  int minPwm = min(cfg.basePwm, APPROACH_MIN_PWM);
+
+  long pwm = map(
+    (long)front,
+    (long)FRONT_SLOW_ADC,
+    (long)cfg.frontWallAdc,
+    (long)cfg.basePwm,
+    (long)minPwm
+  );
+
+  return constrain((int)pwm, minPwm, cfg.basePwm);
 }
 
 // ============================================================
@@ -407,6 +497,7 @@ void followRightWall() {
 const char* stateName(RobotState s) {
   switch (s) {
     case STATE_FOLLOW:      return "SIGUIENDO PARED";
+    case STATE_BRAKE:       return "FRENANDO / DECIDIENDO";
     case STATE_PRE_RIGHT:   return "CENTRANDO PARA DERECHA";
     case STATE_TURN_RIGHT:  return "GIRO DERECHA";
     case STATE_TURN_LEFT:   return "GIRO IZQUIERDA";
@@ -440,69 +531,139 @@ void runMaze() {
       enterState(STATE_FOLLOW);
       break;
 
-    case STATE_FOLLOW:
-      if ((now - lastDecisionMs) >= (uint32_t)cfg.junctionCooldownMs) {
+    case STATE_FOLLOW: {
+      uint16_t front = getFrontAdc();
 
-        // Regla de mano derecha: derecha siempre tiene prioridad.
-        if (rightOpen) {
-          enterState(STATE_PRE_RIGHT);
-          break;
-        }
-
-        // Si no hay derecha y el frente esta bloqueado:
-        // izquierda si esta libre; caso contrario 180 grados.
-        if (frontBlocked) {
-          if (leftOpen) {
-            enterState(STATE_TURN_LEFT);
-          } else {
-            enterState(STATE_UTURN);
-          }
-
-          lastDecisionMs = now;
-          break;
-        }
+      // 1) Seguridad frontal: al llegar al umbral de STOP, primero frena.
+      // La decision se toma con el robot detenido para no entrar pasado a un giro.
+      if (front >= cfg.frontWallAdc) {
+        stopMotors();
+        enterState(STATE_BRAKE);
+        break;
       }
 
-      followRightWall();
+      // 2) Regla de mano derecha:
+      // si aparece una apertura a la derecha, tiene prioridad.
+      if (
+        rightOpen &&
+        (now - lastDecisionMs >= (uint32_t)cfg.junctionCooldownMs)
+      ) {
+        enterState(STATE_PRE_RIGHT);
+        break;
+      }
+
+      // 3) Mientras el frente esta libre, SIEMPRE avanza siguiendo
+      // la pared derecha con PID. Al acercarse a pared frontal,
+      // reduce progresivamente el PWM pero mantiene el PID lateral.
+      int approachPwm = calculateApproachPwm();
+
+      if (approachPwm > 0) {
+        followRightWallAtPwm(approachPwm);
+      } else {
+        stopMotors();
+        enterState(STATE_BRAKE);
+      }
+
+      break;
+    }
+
+    case STATE_BRAKE:
+      stopMotors();
+
+      // Pequeña espera solo para eliminar inercia mecanica.
+      // No se usa tiempo para determinar ningun angulo de giro.
+      if (now - stateStartMs < BRAKE_SETTLE_MS) {
+        break;
+      }
+
+      // Con el robot detenido: derecha > izquierda > 180.
+      if (rightOpen) {
+        captureMoveStart();
+        enterState(STATE_TURN_RIGHT);
+      } else if (leftOpen) {
+        captureMoveStart();
+        enterState(STATE_TURN_LEFT);
+      } else {
+        captureMoveStart();
+        enterState(STATE_UTURN);
+      }
       break;
 
     case STATE_PRE_RIGHT:
+      // El sensor lateral detecta la apertura antes de que el centro
+      // del robot llegue a la esquina. Se conserva este corto avance
+      // temporal hasta calibrar especificamente esa distancia.
+      // Si aparece pared frontal durante el centrado, se prioriza frenar.
+      if (getFrontAdc() >= cfg.frontWallAdc) {
+        stopMotors();
+        enterState(STATE_BRAKE);
+        break;
+      }
+
       setDrive(cfg.turnPwm, cfg.turnPwm);
 
       if (now - stateStartMs >= (uint32_t)cfg.rightAdvanceMs) {
+        captureMoveStart();
         enterState(STATE_TURN_RIGHT);
       }
       break;
 
-    case STATE_TURN_RIGHT:
-      setDrive(cfg.turnPwm, -cfg.turnPwm);
+    case STATE_TURN_RIGHT: {
+      uint32_t ticks = getMoveTicksSum();
 
-      if (now - stateStartMs >= (uint32_t)cfg.rightTurnMs) {
+      if (ticks >= TURN_90_TICKS) {
+        stopMotors();
         lastDecisionMs = now;
         enterState(STATE_SETTLE);
+        break;
       }
+
+      // Desacelera durante el ultimo 25 % del giro.
+      uint32_t slowStart = (TURN_90_TICKS * 3UL) / 4UL;
+      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, TURN_SLOW_PWM) : cfg.turnPwm;
+
+      setDrive(+pwm, -pwm);
       break;
+    }
 
-    case STATE_TURN_LEFT:
-      setDrive(-cfg.turnPwm, cfg.turnPwm);
+    case STATE_TURN_LEFT: {
+      uint32_t ticks = getMoveTicksSum();
 
-      if (now - stateStartMs >= (uint32_t)cfg.leftTurnMs) {
+      if (ticks >= TURN_90_TICKS) {
+        stopMotors();
         lastDecisionMs = now;
         enterState(STATE_SETTLE);
+        break;
       }
+
+      uint32_t slowStart = (TURN_90_TICKS * 3UL) / 4UL;
+      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, TURN_SLOW_PWM) : cfg.turnPwm;
+
+      setDrive(-pwm, +pwm);
       break;
+    }
 
-    case STATE_UTURN:
-      setDrive(cfg.turnPwm, -cfg.turnPwm);
+    case STATE_UTURN: {
+      uint32_t ticks = getMoveTicksSum();
 
-      if (now - stateStartMs >= (uint32_t)cfg.uTurnMs) {
+      if (ticks >= TURN_180_TICKS) {
+        stopMotors();
         lastDecisionMs = now;
         enterState(STATE_SETTLE);
+        break;
       }
+
+      uint32_t slowStart = (TURN_180_TICKS * 3UL) / 4UL;
+      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, TURN_SLOW_PWM) : cfg.turnPwm;
+
+      setDrive(+pwm, -pwm);
       break;
+    }
 
     case STATE_SETTLE:
-      setDrive(cfg.basePwm, cfg.basePwm);
+      // Tras el giro entra suavemente al nuevo pasillo antes de reactivar
+      // el PID y permitir una nueva decision.
+      setDrive(min(cfg.basePwm, 90), min(cfg.basePwm, 90));
 
       if (now - stateStartMs >= (uint32_t)cfg.settleMs) {
         enterState(STATE_FOLLOW);
