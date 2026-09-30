@@ -143,11 +143,12 @@ struct ControlConfig {
   int frontWallAdc = 2300;
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
-  int approachMinPwm = 75;
+  int approachMinPwm = 155;
 
   // Maniobras por encoder.
-  int turnPwm = 75;
-  int turnSlowPwm = 45;
+  // 180 durante la mayor parte del giro y 155 al final.
+  int turnPwm = 180;
+  int turnSlowPwm = 155;
   int turn90Ticks = 251;
   int turn180Ticks = 501;
 
@@ -175,6 +176,11 @@ ControlConfig cfg;
 // 90 grados ~= 251 ticks totales; 180 grados ~= 501 ticks totales.
 // Los valores efectivos se guardan en cfg para poder ajustarlos desde la web.
 const float TICKS_PER_CM = 20.95f;
+
+// Umbral fisico medido: por debajo de ~155 PWM AUS_KIM no vence
+// el rozamiento y los motores pueden quedar detenidos.
+// Todo movimiento autonomo usa 155 como piso real.
+const int MIN_MOVING_PWM = 155;
 
 // Pausa mecanica tras frenar frente a una pared.
 const uint16_t BRAKE_SETTLE_MS = 80;
@@ -447,11 +453,16 @@ void followRightWallAtPwm(int basePwm) {
   );
 
   // En seguimiento de pared ambas ruedas siempre permanecen hacia adelante.
+  // Como AUS_KIM no se mueve de forma confiable por debajo de 155 PWM,
+  // el PID corrige acelerando una rueda pero nunca frenando la otra
+  // por debajo del umbral mecanico.
+  basePwm = constrain(basePwm, MIN_MOVING_PWM, 255);
+
   int leftPwm  = basePwm - (int)correctionPid;
   int rightPwm = basePwm + (int)correctionPid;
 
-  leftPwm  = constrain(leftPwm, 1, 255);
-  rightPwm = constrain(rightPwm, 1, 255);
+  leftPwm  = constrain(leftPwm, MIN_MOVING_PWM, 255);
+  rightPwm = constrain(rightPwm, MIN_MOVING_PWM, 255);
 
   setDrive(leftPwm, rightPwm);
 
@@ -473,18 +484,20 @@ int calculateApproachPwm() {
     return 0;
   }
 
-  // Evita que una configuracion de PWM base baja sea aumentada al frenar.
-  int minPwm = min(cfg.basePwm, cfg.approachMinPwm);
+  // El robot no puede desacelerar por debajo de 155 sin detenerse.
+  // Si basePwm tambien es 155, mantendra 155 hasta el umbral de STOP.
+  int base = constrain(cfg.basePwm, MIN_MOVING_PWM, 255);
+  int minPwm = constrain(cfg.approachMinPwm, MIN_MOVING_PWM, base);
 
   long pwm = map(
     (long)front,
     (long)cfg.frontSlowAdc,
     (long)cfg.frontWallAdc,
-    (long)cfg.basePwm,
+    (long)base,
     (long)minPwm
   );
 
-  return constrain((int)pwm, minPwm, cfg.basePwm);
+  return constrain((int)pwm, minPwm, base);
 }
 
 // ============================================================
@@ -597,7 +610,10 @@ void runMaze() {
         break;
       }
 
-      setDrive(cfg.turnPwm, cfg.turnPwm);
+      {
+        int pwm = constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
+        setDrive(pwm, pwm);
+      }
 
       if (now - stateStartMs >= (uint32_t)cfg.rightAdvanceMs) {
         captureMoveStart();
@@ -617,7 +633,9 @@ void runMaze() {
 
       // Desacelera durante el ultimo 25 % del giro.
       uint32_t slowStart = (cfg.turn90Ticks * 3UL) / 4UL;
-      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, cfg.turnSlowPwm) : cfg.turnPwm;
+      int pwm = (ticks >= slowStart)
+        ? constrain(cfg.turnSlowPwm, MIN_MOVING_PWM, 255)
+        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
 
       setDrive(+pwm, -pwm);
       break;
@@ -634,7 +652,9 @@ void runMaze() {
       }
 
       uint32_t slowStart = (cfg.turn90Ticks * 3UL) / 4UL;
-      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, cfg.turnSlowPwm) : cfg.turnPwm;
+      int pwm = (ticks >= slowStart)
+        ? constrain(cfg.turnSlowPwm, MIN_MOVING_PWM, 255)
+        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
 
       setDrive(-pwm, +pwm);
       break;
@@ -651,7 +671,9 @@ void runMaze() {
       }
 
       uint32_t slowStart = (cfg.turn180Ticks * 3UL) / 4UL;
-      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, cfg.turnSlowPwm) : cfg.turnPwm;
+      int pwm = (ticks >= slowStart)
+        ? constrain(cfg.turnSlowPwm, MIN_MOVING_PWM, 255)
+        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
 
       setDrive(+pwm, -pwm);
       break;
@@ -660,7 +682,10 @@ void runMaze() {
     case STATE_SETTLE:
       // Tras el giro entra suavemente al nuevo pasillo antes de reactivar
       // el PID y permitir una nueva decision.
-      setDrive(min(cfg.basePwm, 90), min(cfg.basePwm, 90));
+      {
+        int settlePwm = constrain(cfg.basePwm, MIN_MOVING_PWM, 255);
+        setDrive(settlePwm, settlePwm);
+      }
 
       if (now - stateStartMs >= (uint32_t)cfg.settleMs) {
         enterState(STATE_FOLLOW);
@@ -6481,7 +6506,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>Ki</span><input class="cfg" id="ki" type="number" step="0.001"></div>
         <div class="field"><span>Kd</span><input class="cfg" id="kd" type="number" step="0.01"></div>
         <div class="field"><span>Objetivo ADC derecha</span><input class="cfg" id="targetRightAdc" type="number" step="1"></div>
-        <div class="field"><span>PWM base</span><input class="cfg" id="basePwm" type="number" min="0" max="255" step="1"></div>
+        <div class="field"><span>PWM base</span><input class="cfg" id="basePwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>Correccion maxima</span><input class="cfg" id="maxCorrection" type="number" min="0" max="255" step="1"></div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
@@ -6527,21 +6552,21 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <h2>Deteccion y frenado</h2>
         <div class="field"><span>Comenzar a frenar ADC</span><input class="cfg" id="frontSlowAdc" type="number" step="1"></div>
         <div class="field"><span>STOP frontal ADC</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
-        <div class="field"><span>PWM minimo aproximacion</span><input class="cfg" id="approachMinPwm" type="number" min="0" max="255" step="1"></div>
+        <div class="field"><span>PWM minimo aproximacion</span><input class="cfg" id="approachMinPwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
       </div>
 
       <div class="card">
         <h2>Giros por encoder</h2>
-        <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="0" max="255" step="1"></div>
-        <div class="field"><span>PWM final giro</span><input class="cfg" id="turnSlowPwm" type="number" min="0" max="255" step="1"></div>
+        <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="155" max="255" step="1"></div>
+        <div class="field"><span>PWM final giro</span><input class="cfg" id="turnSlowPwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>Giro 90° ticks</span><input class="cfg" id="turn90Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Giro 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Centrado antes derecha ms</span><input class="cfg" id="rightAdvanceMs" type="number" min="0" step="10"></div>
         <div class="field"><span>Estabilizacion post-giro ms</span><input class="cfg" id="settleMs" type="number" min="0" step="10"></div>
         <div class="field"><span>Cooldown cruce ms</span><input class="cfg" id="junctionCooldownMs" type="number" min="0" step="10"></div>
-        <div class="hint">Los giros de 90° y 180° terminan por suma de ticks de ambos encoders. Solo el centrado previo a una derecha sigue temporizado.</div>
+        <div class="hint">Los giros de 90° y 180° terminan por suma de ticks de ambos encoders. AUS_KIM usa 155 PWM como piso de movimiento; ningún movimiento autónomo baja de ese valor. Solo el centrado previo a una derecha sigue temporizado.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6949,7 +6974,7 @@ void handleConfig() {
     cfg.targetRightAdc = constrain(server.arg("targetRightAdc").toInt(), 0, 4095);
 
   if (server.hasArg("basePwm"))
-    cfg.basePwm = constrain(server.arg("basePwm").toInt(), 0, 255);
+    cfg.basePwm = constrain(server.arg("basePwm").toInt(), MIN_MOVING_PWM, 255);
 
   if (server.hasArg("maxCorrection"))
     cfg.maxCorrection = constrain(server.arg("maxCorrection").toInt(), 0, 255);
@@ -6961,7 +6986,7 @@ void handleConfig() {
     cfg.frontWallAdc = constrain(server.arg("frontWallAdc").toInt(), 0, 4095);
 
   if (server.hasArg("approachMinPwm"))
-    cfg.approachMinPwm = constrain(server.arg("approachMinPwm").toInt(), 0, 255);
+    cfg.approachMinPwm = constrain(server.arg("approachMinPwm").toInt(), MIN_MOVING_PWM, 255);
 
   if (server.hasArg("rightOpenAdc"))
     cfg.rightOpenAdc = constrain(server.arg("rightOpenAdc").toInt(), 0, 4095);
@@ -6970,10 +6995,10 @@ void handleConfig() {
     cfg.leftOpenAdc = constrain(server.arg("leftOpenAdc").toInt(), 0, 4095);
 
   if (server.hasArg("turnPwm"))
-    cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), 0, 255);
+    cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), MIN_MOVING_PWM, 255);
 
   if (server.hasArg("turnSlowPwm"))
-    cfg.turnSlowPwm = constrain(server.arg("turnSlowPwm").toInt(), 0, 255);
+    cfg.turnSlowPwm = constrain(server.arg("turnSlowPwm").toInt(), MIN_MOVING_PWM, 255);
 
   if (server.hasArg("turn90Ticks"))
     cfg.turn90Ticks = constrain(server.arg("turn90Ticks").toInt(), 1, 5000);
