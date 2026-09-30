@@ -146,8 +146,8 @@ struct ControlConfig {
   int approachMinPwm = 155;
 
   // Maniobras por encoder.
-  // 180 durante la mayor parte del giro y 155 al final.
-  int turnPwm = 180;
+  // Para esta etapa de prueba se gira de forma controlada a 155 PWM.
+  int turnPwm = 155;
   int turnSlowPwm = 155;
   int turn90Ticks = 251;
   int turn180Ticks = 501;
@@ -544,49 +544,32 @@ void runMaze() {
     case STATE_FOLLOW: {
       uint16_t front = getFrontAdc();
 
-      // 1) Seguridad frontal: al llegar al umbral de STOP, primero frena.
-      // La decision se toma con el robot detenido para no entrar pasado a un giro.
-      if (front >= cfg.frontWallAdc) {
-        stopMotors();
-        enterState(STATE_BRAKE);
+      // MODO SIMPLE DE PRUEBA:
+      // Mientras el frente este libre, NO se toman decisiones por aperturas
+      // laterales. El robot solamente avanza siguiendo la pared derecha.
+      if (front < cfg.frontWallAdc) {
+        followRightWallAtPwm(cfg.basePwm);
         break;
       }
 
-      // 2) Regla de mano derecha:
-      // si aparece una apertura a la derecha, tiene prioridad.
-      if (
-        rightOpen &&
-        (now - lastDecisionMs >= (uint32_t)cfg.junctionCooldownMs)
-      ) {
-        enterState(STATE_PRE_RIGHT);
-        break;
-      }
-
-      // 3) Mientras el frente esta libre, SIEMPRE avanza siguiendo
-      // la pared derecha con PID. Al acercarse a pared frontal,
-      // reduce progresivamente el PWM pero mantiene el PID lateral.
-      int approachPwm = calculateApproachPwm();
-
-      if (approachPwm > 0) {
-        followRightWallAtPwm(approachPwm);
-      } else {
-        stopMotors();
-        enterState(STATE_BRAKE);
-      }
-
+      // Solo al llegar a una pared frontal se detiene y decide.
+      stopMotors();
+      enterState(STATE_BRAKE);
       break;
     }
 
     case STATE_BRAKE:
       stopMotors();
 
-      // Pequeña espera solo para eliminar inercia mecanica.
-      // No se usa tiempo para determinar ningun angulo de giro.
+      // Esperar a que desaparezca la inercia antes de leer laterales.
       if (now - stateStartMs < BRAKE_SETTLE_MS) {
         break;
       }
 
-      // Con el robot detenido: derecha > izquierda > 180.
+      // Regla de mano derecha, pero evaluada SOLO frente a una pared:
+      // 1) derecha libre -> giro derecha 90
+      // 2) derecha cerrada e izquierda libre -> giro izquierda 90
+      // 3) ambas cerradas -> giro 180
       if (rightOpen) {
         captureMoveStart();
         enterState(STATE_TURN_RIGHT);
@@ -599,44 +582,24 @@ void runMaze() {
       }
       break;
 
+    // Se conserva por compatibilidad con el enum, pero no se usa
+    // en este modo simplificado.
     case STATE_PRE_RIGHT:
-      // El sensor lateral detecta la apertura antes de que el centro
-      // del robot llegue a la esquina. Se conserva este corto avance
-      // temporal hasta calibrar especificamente esa distancia.
-      // Si aparece pared frontal durante el centrado, se prioriza frenar.
-      if (getFrontAdc() >= cfg.frontWallAdc) {
-        stopMotors();
-        enterState(STATE_BRAKE);
-        break;
-      }
-
-      {
-        int pwm = constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
-        setDrive(pwm, pwm);
-      }
-
-      if (now - stateStartMs >= (uint32_t)cfg.rightAdvanceMs) {
-        captureMoveStart();
-        enterState(STATE_TURN_RIGHT);
-      }
+      stopMotors();
+      enterState(STATE_FOLLOW);
       break;
 
     case STATE_TURN_RIGHT: {
       uint32_t ticks = getMoveTicksSum();
 
-      if (ticks >= cfg.turn90Ticks) {
+      if (ticks >= (uint32_t)cfg.turn90Ticks) {
         stopMotors();
         lastDecisionMs = now;
         enterState(STATE_SETTLE);
         break;
       }
 
-      // Desacelera durante el ultimo 25 % del giro.
-      uint32_t slowStart = (cfg.turn90Ticks * 3UL) / 4UL;
-      int pwm = (ticks >= slowStart)
-        ? constrain(cfg.turnSlowPwm, MIN_MOVING_PWM, 255)
-        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
-
+      int pwm = constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
       setDrive(+pwm, -pwm);
       break;
     }
@@ -644,18 +607,14 @@ void runMaze() {
     case STATE_TURN_LEFT: {
       uint32_t ticks = getMoveTicksSum();
 
-      if (ticks >= cfg.turn90Ticks) {
+      if (ticks >= (uint32_t)cfg.turn90Ticks) {
         stopMotors();
         lastDecisionMs = now;
         enterState(STATE_SETTLE);
         break;
       }
 
-      uint32_t slowStart = (cfg.turn90Ticks * 3UL) / 4UL;
-      int pwm = (ticks >= slowStart)
-        ? constrain(cfg.turnSlowPwm, MIN_MOVING_PWM, 255)
-        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
-
+      int pwm = constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
       setDrive(-pwm, +pwm);
       break;
     }
@@ -663,25 +622,20 @@ void runMaze() {
     case STATE_UTURN: {
       uint32_t ticks = getMoveTicksSum();
 
-      if (ticks >= cfg.turn180Ticks) {
+      if (ticks >= (uint32_t)cfg.turn180Ticks) {
         stopMotors();
         lastDecisionMs = now;
         enterState(STATE_SETTLE);
         break;
       }
 
-      uint32_t slowStart = (cfg.turn180Ticks * 3UL) / 4UL;
-      int pwm = (ticks >= slowStart)
-        ? constrain(cfg.turnSlowPwm, MIN_MOVING_PWM, 255)
-        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
-
+      int pwm = constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
       setDrive(+pwm, -pwm);
       break;
     }
 
     case STATE_SETTLE:
-      // Tras el giro entra suavemente al nuevo pasillo antes de reactivar
-      // el PID y permitir una nueva decision.
+      // Avanza un instante al terminar el giro para entrar en el nuevo pasillo.
       {
         int settlePwm = constrain(cfg.basePwm, MIN_MOVING_PWM, 255);
         setDrive(settlePwm, settlePwm);
@@ -6543,8 +6497,8 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Prioridad: derecha libre → derecha. Si frente bloqueado y derecha no disponible:
-          izquierda si esta libre; si no, giro 180°.
+          Modo de prueba: mientras el frente esté libre, el robot solo sigue la pared derecha con PID.
+          Recién al detectar pared frontal se detiene y decide: derecha, izquierda o giro 180°.
         </div>
       </div>
 
@@ -6563,10 +6517,9 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>PWM final giro</span><input class="cfg" id="turnSlowPwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>Giro 90° ticks</span><input class="cfg" id="turn90Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Giro 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
-        <div class="field"><span>Centrado antes derecha ms</span><input class="cfg" id="rightAdvanceMs" type="number" min="0" step="10"></div>
         <div class="field"><span>Estabilizacion post-giro ms</span><input class="cfg" id="settleMs" type="number" min="0" step="10"></div>
         <div class="field"><span>Cooldown cruce ms</span><input class="cfg" id="junctionCooldownMs" type="number" min="0" step="10"></div>
-        <div class="hint">Los giros de 90° y 180° terminan por suma de ticks de ambos encoders. AUS_KIM usa 155 PWM como piso de movimiento; ningún movimiento autónomo baja de ese valor. Solo el centrado previo a una derecha sigue temporizado.</div>
+        <div class="hint">Los giros de 90° y 180° terminan por suma de ticks de ambos encoders. En este modo ninguna apertura lateral provoca un giro mientras el frente esté libre.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6677,7 +6630,7 @@ async function applyConfig(){
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontSlowAdc','frontWallAdc','approachMinPwm',
     'rightOpenAdc','leftOpenAdc','turnPwm','turnSlowPwm',
-    'turn90Ticks','turn180Ticks','rightAdvanceMs',
+    'turn90Ticks','turn180Ticks',
     'settleMs','junctionCooldownMs'
   ];
 
