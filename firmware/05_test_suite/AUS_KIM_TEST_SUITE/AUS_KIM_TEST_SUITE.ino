@@ -137,22 +137,29 @@ struct ControlConfig {
   int maxCorrection = 60;
 
   // Deteccion de laberinto
-  // frontWallAdc es el umbral de STOP frontal; antes de llegar se desacelera.
+  // frontSlowAdc: comienza a desacelerar.
+  // frontWallAdc: STOP completo y decision.
+  int frontSlowAdc = 2050;
   int frontWallAdc = 2300;
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
+  int approachMinPwm = 75;
 
-  // Maniobras. Los angulos ya NO se determinan por tiempo:
-  // se miden con TURN_90_TICKS / TURN_180_TICKS.
+  // Maniobras por encoder.
   int turnPwm = 75;
+  int turnSlowPwm = 45;
+  int turn90Ticks = 251;
+  int turn180Ticks = 501;
+
+  // El centrado previo a derecha sigue temporal hasta calibrarlo fisicamente.
   int rightAdvanceMs = 140;
-  // Campos legacy conservados por compatibilidad con la interfaz actual.
-  // No se usan para finalizar giros del Maze Solver.
+  int settleMs = 90;
+  int junctionCooldownMs = 250;
+
+  // Campos legacy: ya NO gobiernan los giros.
   int rightTurnMs = 310;
   int leftTurnMs = 310;
   int uTurnMs = 620;
-  int settleMs = 90;
-  int junctionCooldownMs = 250;
 
   // Prueba manual
   int manualPwm = 80;
@@ -166,18 +173,8 @@ ControlConfig cfg;
 // Recta medida: 20 cm = promedio 419 ticks -> 20.95 ticks/cm.
 // Giros medidos repetidamente por suma de recorridos absolutos:
 // 90 grados ~= 251 ticks totales; 180 grados ~= 501 ticks totales.
+// Los valores efectivos se guardan en cfg para poder ajustarlos desde la web.
 const float TICKS_PER_CM = 20.95f;
-const uint16_t TURN_90_TICKS = 251;
-const uint16_t TURN_180_TICKS = 501;
-
-// Aproximacion a pared frontal.
-// FRONT_SLOW_ADC: comienza a desacelerar.
-// cfg.frontWallAdc: se detiene completamente y decide.
-const uint16_t FRONT_SLOW_ADC = 2050;
-const int APPROACH_MIN_PWM = 75;
-
-// En el ultimo 25 % del giro baja PWM para reducir sobrepaso por inercia.
-const int TURN_SLOW_PWM = 45;
 
 // Pausa mecanica tras frenar frente a una pared.
 const uint16_t BRAKE_SETTLE_MS = 80;
@@ -468,7 +465,7 @@ void followRightWall() {
 int calculateApproachPwm() {
   uint16_t front = getFrontAdc();
 
-  if (front <= FRONT_SLOW_ADC) {
+  if (front <= cfg.frontSlowAdc) {
     return cfg.basePwm;
   }
 
@@ -477,11 +474,11 @@ int calculateApproachPwm() {
   }
 
   // Evita que una configuracion de PWM base baja sea aumentada al frenar.
-  int minPwm = min(cfg.basePwm, APPROACH_MIN_PWM);
+  int minPwm = min(cfg.basePwm, cfg.approachMinPwm);
 
   long pwm = map(
     (long)front,
-    (long)FRONT_SLOW_ADC,
+    (long)cfg.frontSlowAdc,
     (long)cfg.frontWallAdc,
     (long)cfg.basePwm,
     (long)minPwm
@@ -611,7 +608,7 @@ void runMaze() {
     case STATE_TURN_RIGHT: {
       uint32_t ticks = getMoveTicksSum();
 
-      if (ticks >= TURN_90_TICKS) {
+      if (ticks >= cfg.turn90Ticks) {
         stopMotors();
         lastDecisionMs = now;
         enterState(STATE_SETTLE);
@@ -619,8 +616,8 @@ void runMaze() {
       }
 
       // Desacelera durante el ultimo 25 % del giro.
-      uint32_t slowStart = (TURN_90_TICKS * 3UL) / 4UL;
-      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, TURN_SLOW_PWM) : cfg.turnPwm;
+      uint32_t slowStart = (cfg.turn90Ticks * 3UL) / 4UL;
+      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, cfg.turnSlowPwm) : cfg.turnPwm;
 
       setDrive(+pwm, -pwm);
       break;
@@ -629,15 +626,15 @@ void runMaze() {
     case STATE_TURN_LEFT: {
       uint32_t ticks = getMoveTicksSum();
 
-      if (ticks >= TURN_90_TICKS) {
+      if (ticks >= cfg.turn90Ticks) {
         stopMotors();
         lastDecisionMs = now;
         enterState(STATE_SETTLE);
         break;
       }
 
-      uint32_t slowStart = (TURN_90_TICKS * 3UL) / 4UL;
-      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, TURN_SLOW_PWM) : cfg.turnPwm;
+      uint32_t slowStart = (cfg.turn90Ticks * 3UL) / 4UL;
+      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, cfg.turnSlowPwm) : cfg.turnPwm;
 
       setDrive(-pwm, +pwm);
       break;
@@ -646,15 +643,15 @@ void runMaze() {
     case STATE_UTURN: {
       uint32_t ticks = getMoveTicksSum();
 
-      if (ticks >= TURN_180_TICKS) {
+      if (ticks >= cfg.turn180Ticks) {
         stopMotors();
         lastDecisionMs = now;
         enterState(STATE_SETTLE);
         break;
       }
 
-      uint32_t slowStart = (TURN_180_TICKS * 3UL) / 4UL;
-      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, TURN_SLOW_PWM) : cfg.turnPwm;
+      uint32_t slowStart = (cfg.turn180Ticks * 3UL) / 4UL;
+      int pwm = (ticks >= slowStart) ? min(cfg.turnPwm, cfg.turnSlowPwm) : cfg.turnPwm;
 
       setDrive(+pwm, -pwm);
       break;
@@ -6527,21 +6524,24 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
       </div>
 
       <div class="card">
-        <h2>Deteccion</h2>
-        <div class="field"><span>Pared frontal ADC</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
+        <h2>Deteccion y frenado</h2>
+        <div class="field"><span>Comenzar a frenar ADC</span><input class="cfg" id="frontSlowAdc" type="number" step="1"></div>
+        <div class="field"><span>STOP frontal ADC</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
+        <div class="field"><span>PWM minimo aproximacion</span><input class="cfg" id="approachMinPwm" type="number" min="0" max="255" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
       </div>
 
       <div class="card">
-        <h2>Giros</h2>
+        <h2>Giros por encoder</h2>
         <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="0" max="255" step="1"></div>
-        <div class="field"><span>Avance antes derecha ms</span><input class="cfg" id="rightAdvanceMs" type="number" min="0" step="10"></div>
-        <div class="field"><span>Giro derecha ms</span><input class="cfg" id="rightTurnMs" type="number" min="0" step="10"></div>
-        <div class="field"><span>Giro izquierda ms</span><input class="cfg" id="leftTurnMs" type="number" min="0" step="10"></div>
-        <div class="field"><span>Giro 180 ms</span><input class="cfg" id="uTurnMs" type="number" min="0" step="10"></div>
-        <div class="field"><span>Estabilizacion ms</span><input class="cfg" id="settleMs" type="number" min="0" step="10"></div>
+        <div class="field"><span>PWM final giro</span><input class="cfg" id="turnSlowPwm" type="number" min="0" max="255" step="1"></div>
+        <div class="field"><span>Giro 90° ticks</span><input class="cfg" id="turn90Ticks" type="number" min="1" step="1"></div>
+        <div class="field"><span>Giro 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
+        <div class="field"><span>Centrado antes derecha ms</span><input class="cfg" id="rightAdvanceMs" type="number" min="0" step="10"></div>
+        <div class="field"><span>Estabilizacion post-giro ms</span><input class="cfg" id="settleMs" type="number" min="0" step="10"></div>
         <div class="field"><span>Cooldown cruce ms</span><input class="cfg" id="junctionCooldownMs" type="number" min="0" step="10"></div>
+        <div class="hint">Los giros de 90° y 180° terminan por suma de ticks de ambos encoders. Solo el centrado previo a una derecha sigue temporizado.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6554,6 +6554,8 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
           <div class="metric"><div class="label">Lateral derecho</div><div class="value" id="mLR">0</div></div>
           <div class="metric"><div class="label">Motor izquierdo</div><div class="value" id="mMotorL">0</div></div>
           <div class="metric"><div class="label">Motor derecho</div><div class="value" id="mMotorR">0</div></div>
+          <div class="metric"><div class="label">Encoder izquierdo</div><div class="value" id="mEncL">0</div></div>
+          <div class="metric"><div class="label">Encoder derecho</div><div class="value" id="mEncR">0</div></div>
           <div class="metric"><div class="label">Error PID</div><div class="value" id="mError">0</div></div>
           <div class="metric"><div class="label">Correccion PID</div><div class="value" id="mCorrection">0</div></div>
         </div>
@@ -6648,8 +6650,9 @@ async function resetEncoders(){
 async function applyConfig(){
   const ids=[
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
-    'frontWallAdc','rightOpenAdc','leftOpenAdc','turnPwm',
-    'rightAdvanceMs','rightTurnMs','leftTurnMs','uTurnMs',
+    'frontSlowAdc','frontWallAdc','approachMinPwm',
+    'rightOpenAdc','leftOpenAdc','turnPwm','turnSlowPwm',
+    'turn90Ticks','turn180Ticks','rightAdvanceMs',
     'settleMs','junctionCooldownMs'
   ];
 
@@ -6714,6 +6717,8 @@ async function updateStatus(){
     setSensor('m',d);
     document.getElementById('mMotorL').textContent=d.motor.left;
     document.getElementById('mMotorR').textContent=d.motor.right;
+    document.getElementById('mEncL').textContent=d.enc.left;
+    document.getElementById('mEncR').textContent=d.enc.right;
     document.getElementById('mError').textContent=d.pid.error.toFixed(1);
     document.getElementById('mCorrection').textContent=d.pid.correction.toFixed(1);
 
@@ -6812,10 +6817,15 @@ void handleStatus() {
   json += "\"targetRightAdc\":" + String(cfg.targetRightAdc) + ",";
   json += "\"basePwm\":" + String(cfg.basePwm) + ",";
   json += "\"maxCorrection\":" + String(cfg.maxCorrection) + ",";
+  json += "\"frontSlowAdc\":" + String(cfg.frontSlowAdc) + ",";
   json += "\"frontWallAdc\":" + String(cfg.frontWallAdc) + ",";
+  json += "\"approachMinPwm\":" + String(cfg.approachMinPwm) + ",";
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
+  json += "\"turnSlowPwm\":" + String(cfg.turnSlowPwm) + ",";
+  json += "\"turn90Ticks\":" + String(cfg.turn90Ticks) + ",";
+  json += "\"turn180Ticks\":" + String(cfg.turn180Ticks) + ",";
   json += "\"rightAdvanceMs\":" + String(cfg.rightAdvanceMs) + ",";
   json += "\"rightTurnMs\":" + String(cfg.rightTurnMs) + ",";
   json += "\"leftTurnMs\":" + String(cfg.leftTurnMs) + ",";
@@ -6944,8 +6954,14 @@ void handleConfig() {
   if (server.hasArg("maxCorrection"))
     cfg.maxCorrection = constrain(server.arg("maxCorrection").toInt(), 0, 255);
 
+  if (server.hasArg("frontSlowAdc"))
+    cfg.frontSlowAdc = constrain(server.arg("frontSlowAdc").toInt(), 0, 4095);
+
   if (server.hasArg("frontWallAdc"))
     cfg.frontWallAdc = constrain(server.arg("frontWallAdc").toInt(), 0, 4095);
+
+  if (server.hasArg("approachMinPwm"))
+    cfg.approachMinPwm = constrain(server.arg("approachMinPwm").toInt(), 0, 255);
 
   if (server.hasArg("rightOpenAdc"))
     cfg.rightOpenAdc = constrain(server.arg("rightOpenAdc").toInt(), 0, 4095);
@@ -6955,6 +6971,15 @@ void handleConfig() {
 
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), 0, 255);
+
+  if (server.hasArg("turnSlowPwm"))
+    cfg.turnSlowPwm = constrain(server.arg("turnSlowPwm").toInt(), 0, 255);
+
+  if (server.hasArg("turn90Ticks"))
+    cfg.turn90Ticks = constrain(server.arg("turn90Ticks").toInt(), 1, 5000);
+
+  if (server.hasArg("turn180Ticks"))
+    cfg.turn180Ticks = constrain(server.arg("turn180Ticks").toInt(), 1, 10000);
 
   if (server.hasArg("rightAdvanceMs"))
     cfg.rightAdvanceMs = constrain(server.arg("rightAdvanceMs").toInt(), 0, 2000);
