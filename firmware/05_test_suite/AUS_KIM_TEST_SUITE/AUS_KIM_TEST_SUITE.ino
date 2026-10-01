@@ -663,33 +663,42 @@ void runMaze() {
 
     case STATE_FOLLOW: {
       uint16_t front = getFrontAdc();
-      bool frontStop = front >= cfg.frontWallAdc;
 
-      // Cruce/esquina derecha: exige varias lecturas consecutivas.
-      bool rightJunction = rightOpenStableCount >= 3;
-
-      if (frontStop || rightJunction) {
+      // UNICA condicion que provoca un giro:
+      // encontrar una pared frontal.
+      if (front >= cfg.frontWallAdc) {
         stopMotors();
-        mazeRightOpeningEvent = rightJunction;
         enterState(STATE_BRAKE);
         break;
       }
 
-      // Seguimiento normal de pared derecha.
       int mazePwm = max(cfg.basePwm, cfg.approachMinPwm);
-      followRightWallAtPwm(mazePwm);
+      mazePwm = constrain(mazePwm, MIN_MOVING_PWM, 255);
+
+      // Si existe pared derecha, la sigue con PID.
+      if (sLR.filtered >= cfg.rightWallAcquireAdc) {
+        followRightWallAtPwm(mazePwm);
+      } else {
+        // Si NO existe pared derecha, no gira ni se detiene:
+        // simplemente avanza recto buscandola.
+        resetPid();
+        setDrive(mazePwm, mazePwm);
+      }
+
       break;
     }
 
     case STATE_BRAKE:
       stopMotors();
 
+      // Deja que el robot quede completamente quieto.
       if (now - stateStartMs < BRAKE_SETTLE_MS) {
         break;
       }
 
+      // Solo frente a una pared decide hacia donde salir.
       // Prioridad mano derecha.
-      if (mazeRightOpeningEvent || rightOpen) {
+      if (rightOpen) {
         pendingTurnState = STATE_TURN_RIGHT;
       } else if (leftOpen) {
         pendingTurnState = STATE_TURN_LEFT;
@@ -703,12 +712,12 @@ void runMaze() {
     case STATE_DECISION_WAIT:
       stopMotors();
 
+      // Espera detenida antes de ejecutar el giro elegido.
       if (now - stateStartMs < (uint32_t)cfg.decisionWaitMs) {
         break;
       }
 
       captureMoveStart();
-      turnWallStableCount = 0;
 
       if (
         pendingTurnState == STATE_TURN_RIGHT ||
@@ -721,20 +730,14 @@ void runMaze() {
       }
       break;
 
-    case STATE_PRE_RIGHT:
-      stopMotors();
-      enterState(STATE_FOLLOW);
-      break;
-
     case STATE_TURN_RIGHT: {
       uint32_t ticks = getMoveTicksSum();
 
-      // Los encoders determinan el final geometrico del giro.
       if (ticks >= (uint32_t)cfg.turn90Ticks) {
         stopMotors();
-        mazeRightOpeningEvent = false;
-        turnWallStableCount = 0;
-        enterState(STATE_FIND_RIGHT_WALL);
+        pendingTurnState = STATE_STOPPED;
+        resetPid();
+        enterState(STATE_FOLLOW);
         break;
       }
 
@@ -752,9 +755,9 @@ void runMaze() {
 
       if (ticks >= (uint32_t)cfg.turn90Ticks) {
         stopMotors();
-        mazeRightOpeningEvent = false;
-        turnWallStableCount = 0;
-        enterState(STATE_FIND_RIGHT_WALL);
+        pendingTurnState = STATE_STOPPED;
+        resetPid();
+        enterState(STATE_FOLLOW);
         break;
       }
 
@@ -772,9 +775,9 @@ void runMaze() {
 
       if (ticks >= (uint32_t)cfg.turn180Ticks) {
         stopMotors();
-        mazeRightOpeningEvent = false;
-        turnWallStableCount = 0;
-        enterState(STATE_FIND_RIGHT_WALL);
+        pendingTurnState = STATE_STOPPED;
+        resetPid();
+        enterState(STATE_FOLLOW);
         break;
       }
 
@@ -787,60 +790,11 @@ void runMaze() {
       break;
     }
 
-    case STATE_FIND_RIGHT_WALL: {
-      // El giro ya termino. Si la pared derecha no aparece inmediatamente,
-      // avanza recto por el nuevo pasillo hasta encontrarla.
-      uint16_t front = getFrontAdc();
-
-      // Si antes de encontrar pared derecha aparece otra pared frontal,
-      // vuelve a detenerse y decidir.
-      if (front >= cfg.frontWallAdc) {
-        stopMotors();
-        mazeRightOpeningEvent = false;
-        enterState(STATE_BRAKE);
-        break;
-      }
-
-      bool rightWallFound = sLR.filtered >= cfg.rightWallAcquireAdc;
-
-      if (rightWallFound) {
-        if (turnWallStableCount < 10) turnWallStableCount++;
-      } else {
-        turnWallStableCount = 0;
-      }
-
-      // Tres lecturas consecutivas: la pared derecha ya es valida.
-      if (turnWallStableCount >= 3) {
-        turnWallStableCount = 0;
-        rightOpenStableCount = 0;
-        pendingTurnState = STATE_STOPPED;
-        resetPid();
-        enterState(STATE_FOLLOW);
-        break;
-      }
-
-      // Todavia no hay pared derecha: sigue recto buscandola.
-      int searchPwm = max(cfg.basePwm, cfg.approachMinPwm);
-      searchPwm = constrain(searchPwm, MIN_MOVING_PWM, 255);
-      setDrive(searchPwm, searchPwm);
-      break;
-    }
-
+    // Estados legacy: ya no participan en la logica simplificada.
+    case STATE_PRE_RIGHT:
+    case STATE_FIND_RIGHT_WALL:
     case STATE_SETTLE:
-      // Estado conservado por compatibilidad. Si se ingresa, avanza brevemente
-      // y vuelve al seguimiento de pared derecha.
-      {
-        int settlePwm = max(cfg.basePwm, cfg.approachMinPwm);
-        settlePwm = constrain(settlePwm, MIN_MOVING_PWM, 255);
-        setDrive(settlePwm, settlePwm);
-      }
-
-      if (now - stateStartMs >= (uint32_t)cfg.settleMs) {
-        rightOpenStableCount = 0;
-        turnWallStableCount = 0;
-        pendingTurnState = STATE_STOPPED;
-        enterState(STATE_FOLLOW);
-      }
+      enterState(STATE_FOLLOW);
       break;
 
     case STATE_SEARCH_FAIL:
@@ -6705,7 +6659,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Sigue la pared derecha con PID. Si llega a una pared frontal o detecta una apertura derecha estable, se detiene, decide y gira. Al terminar el giro avanza recto hasta reencontrar una pared derecha; recién entonces vuelve al PID.
+          Siempre avanza hacia adelante. Si ve pared derecha, la sigue con PID. Si no ve pared derecha, avanza recto buscándola. Solo gira cuando encuentra una pared frontal.
         </div>
       </div>
 
@@ -6716,7 +6670,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>PWM minimo aproximacion</span><input class="cfg" id="approachMinPwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
-        <div class="field"><span>Pared derecha reencontrada ADC</span><input class="cfg" id="rightWallAcquireAdc" type="number" step="1"></div>
+        <div class="field"><span>Detectar pared derecha ADC</span><input class="cfg" id="rightWallAcquireAdc" type="number" step="1"></div>
       </div>
 
       <div class="card">
@@ -6727,7 +6681,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>Referencia 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="3000" step="10"></div>
         <div class="field"><span>Estabilizacion post-giro ms</span><input class="cfg" id="settleMs" type="number" min="0" step="10"></div>
-        <div class="hint">Los ticks vuelven a fijar el final del giro. Después del giro, si todavía no hay pared derecha, el robot avanza recto hasta encontrarla y recién ahí retoma el PID.</div>
+        <div class="hint">Los ticks fijan el final del giro. Después vuelve inmediatamente al avance: con pared derecha usa PID; sin pared derecha sigue recto hasta encontrarla.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
