@@ -126,7 +126,8 @@ enum RobotState : uint8_t {
   STATE_TURN_RIGHT,
   STATE_TURN_LEFT,
   STATE_UTURN,
-  STATE_SETTLE
+  STATE_SETTLE,
+  STATE_SEARCH_FAIL
 };
 
 struct SensorData {
@@ -152,6 +153,11 @@ struct ControlConfig {
   int frontWallAdc = 2000;
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
+
+  // Durante un giro, se considera que la pared derecha fue reencontrada
+  // cuando el lateral derecho supera este ADC.
+  int rightWallAcquireAdc = 2000;
+
   int approachMinPwm = 165;
 
   // Maniobras por encoder - nueva calibracion.
@@ -213,6 +219,13 @@ SensorData sFL, sFR, sLL, sLR;
 bool frontBlocked = false;
 bool rightOpen = false;
 bool leftOpen = false;
+
+// Confirmacion temporal para no reaccionar a una sola muestra lateral.
+uint8_t rightOpenStableCount = 0;
+uint8_t turnWallStableCount = 0;
+
+// Recuerda si el evento que detuvo al robot fue una apertura a la derecha.
+bool mazeRightOpeningEvent = false;
 
 float errorPid = 0.0f;
 float prevErrorPid = 0.0f;
@@ -510,6 +523,12 @@ void updateAllSensors() {
 
   rightOpen = sLR.filtered < cfg.rightOpenAdc;
   leftOpen  = sLL.filtered < cfg.leftOpenAdc;
+
+  if (rightOpen) {
+    if (rightOpenStableCount < 10) rightOpenStableCount++;
+  } else {
+    rightOpenStableCount = 0;
+  }
 }
 
 // Para aproximacion frontal usamos el sensor que ve la pared mas cerca.
@@ -610,6 +629,7 @@ const char* stateName(RobotState s) {
     case STATE_TURN_LEFT:   return "GIRO IZQUIERDA";
     case STATE_UTURN:       return "GIRO 180";
     case STATE_SETTLE:      return "ESTABILIZANDO";
+    case STATE_SEARCH_FAIL:  return "PARED DERECHA NO ENCONTRADA";
     case STATE_STOPPED:
     default:                return "DETENIDO";
   }
@@ -634,6 +654,49 @@ void enterState(RobotState newState) {
 void runMaze() {
   uint32_t now = millis();
 
+  auto finishTurnIfWallFound = [&](uint32_t ticks, uint32_t nominalTicks, bool isUTurn) -> bool {
+    // El encoder marca una zona razonable donde empezar a buscar la pared.
+    // No se permite terminar apenas empieza el giro porque podria estar
+    // detectando la misma pared de origen.
+    uint32_t minTicks = isUTurn
+      ? (nominalTicks * 60UL) / 100UL
+      : (nominalTicks * 55UL) / 100UL;
+
+    // Limite de seguridad: si no reencontro pared, no sigue girando sin control.
+    uint32_t maxTicks = (nominalTicks * 160UL) / 100UL;
+
+    bool enoughRotation = ticks >= minTicks;
+    bool rightWallFound = sLR.filtered >= cfg.rightWallAcquireAdc;
+    bool frontClear = getFrontAdc() < cfg.frontSlowAdc;
+
+    if (enoughRotation && rightWallFound && frontClear) {
+      if (turnWallStableCount < 10) turnWallStableCount++;
+    } else {
+      turnWallStableCount = 0;
+    }
+
+    // Exige 3 lecturas consecutivas (~30 ms a 100 Hz).
+    if (turnWallStableCount >= 3) {
+      stopMotors();
+      lastDecisionMs = now;
+      mazeRightOpeningEvent = false;
+      enterState(STATE_SETTLE);
+      return true;
+    }
+
+    // Si supera ampliamente la referencia geometrica y no encuentra pared,
+    // se detiene para no perderse dentro del laberinto.
+    if (ticks >= maxTicks) {
+      stopMotors();
+      running = false;
+      mazeRightOpeningEvent = false;
+      robotState = STATE_SEARCH_FAIL;
+      return true;
+    }
+
+    return false;
+  };
+
   switch (robotState) {
     case STATE_STOPPED:
       enterState(STATE_FOLLOW);
@@ -641,38 +704,36 @@ void runMaze() {
 
     case STATE_FOLLOW: {
       uint16_t front = getFrontAdc();
+      bool frontStop = front >= cfg.frontWallAdc;
 
-      // MODO SIMPLE DE PRUEBA:
-      // Mientras el frente este libre, NO se toman decisiones por aperturas
-      // laterales. El robot solamente avanza siguiendo la pared derecha.
-      if (front < cfg.frontWallAdc) {
-        // En Maze usamos como piso el PWM minimo de aproximacion calibrado.
-        int mazePwm = max(cfg.basePwm, cfg.approachMinPwm);
-        followRightWallAtPwm(mazePwm);
+      // Una apertura derecha estable representa esquina/cruce.
+      // 3 muestras consecutivas evitan reaccionar a ruido aislado.
+      bool rightJunction = rightOpenStableCount >= 3;
+
+      if (frontStop || rightJunction) {
+        stopMotors();
+        mazeRightOpeningEvent = rightJunction;
+        enterState(STATE_BRAKE);
         break;
       }
 
-      // Solo al llegar a una pared frontal se detiene y decide.
-      stopMotors();
-      enterState(STATE_BRAKE);
+      // Mientras no haya pared frontal ni cruce, sigue la pared derecha.
+      int mazePwm = max(cfg.basePwm, cfg.approachMinPwm);
+      followRightWallAtPwm(mazePwm);
       break;
     }
 
     case STATE_BRAKE:
       stopMotors();
 
-      // Primero queda completamente quieto para que la lectura lateral
-      // no este afectada por la inercia del avance.
+      // Queda quieto antes de decidir para estabilizar sensores.
       if (now - stateStartMs < BRAKE_SETTLE_MS) {
         break;
       }
 
-      // Decide SIN mover el robot.
-      // Regla de mano derecha:
-      // 1) derecha libre -> 90 derecha
-      // 2) derecha cerrada e izquierda libre -> 90 izquierda
-      // 3) ambas cerradas -> 180
-      if (rightOpen) {
+      // Si se detuvo por una apertura derecha, la prioridad es tomarla.
+      // Si se detuvo por pared frontal, aplica regla de mano derecha.
+      if (mazeRightOpeningEvent || rightOpen) {
         pendingTurnState = STATE_TURN_RIGHT;
       } else if (leftOpen) {
         pendingTurnState = STATE_TURN_LEFT;
@@ -680,20 +741,19 @@ void runMaze() {
         pendingTurnState = STATE_UTURN;
       }
 
-      // La salida ya fue elegida, pero todavia no se mueve.
       enterState(STATE_DECISION_WAIT);
       break;
 
     case STATE_DECISION_WAIT:
       stopMotors();
 
-      // Mantiene el robot detenido unos ms despues de encontrar la salida.
       if (now - stateStartMs < (uint32_t)cfg.decisionWaitMs) {
         break;
       }
 
-      // La referencia de encoder se toma justo antes de comenzar el giro.
+      // La referencia de encoder empieza exactamente cuando comienza el giro.
       captureMoveStart();
+      turnWallStableCount = 0;
 
       if (
         pendingTurnState == STATE_TURN_RIGHT ||
@@ -706,9 +766,8 @@ void runMaze() {
       }
       break;
 
-    // Se conserva por compatibilidad con el enum, pero no se usa
-    // en este modo simplificado.
     case STATE_PRE_RIGHT:
+      // Estado legacy; ya no se usa.
       stopMotors();
       enterState(STATE_FOLLOW);
       break;
@@ -716,17 +775,15 @@ void runMaze() {
     case STATE_TURN_RIGHT: {
       uint32_t ticks = getMoveTicksSum();
 
-      if (ticks >= (uint32_t)cfg.turn90Ticks) {
-        stopMotors();
-        lastDecisionMs = now;
-        enterState(STATE_SETTLE);
+      if (finishTurnIfWallFound(ticks, (uint32_t)cfg.turn90Ticks, false)) {
         break;
       }
 
-      uint32_t slowStart = ((uint32_t)cfg.turn90Ticks * 80UL) / 100UL;
-      int pwm = (ticks >= slowStart)
+      uint32_t searchStart = ((uint32_t)cfg.turn90Ticks * 55UL) / 100UL;
+      int pwm = (ticks >= searchStart)
         ? constrain(cfg.turnSlowPwm, 0, 255)
         : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
+
       setDrive(+pwm, -pwm);
       break;
     }
@@ -734,17 +791,15 @@ void runMaze() {
     case STATE_TURN_LEFT: {
       uint32_t ticks = getMoveTicksSum();
 
-      if (ticks >= (uint32_t)cfg.turn90Ticks) {
-        stopMotors();
-        lastDecisionMs = now;
-        enterState(STATE_SETTLE);
+      if (finishTurnIfWallFound(ticks, (uint32_t)cfg.turn90Ticks, false)) {
         break;
       }
 
-      uint32_t slowStart = ((uint32_t)cfg.turn90Ticks * 80UL) / 100UL;
-      int pwm = (ticks >= slowStart)
+      uint32_t searchStart = ((uint32_t)cfg.turn90Ticks * 55UL) / 100UL;
+      int pwm = (ticks >= searchStart)
         ? constrain(cfg.turnSlowPwm, 0, 255)
         : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
+
       setDrive(-pwm, +pwm);
       break;
     }
@@ -752,31 +807,39 @@ void runMaze() {
     case STATE_UTURN: {
       uint32_t ticks = getMoveTicksSum();
 
-      if (ticks >= (uint32_t)cfg.turn180Ticks) {
-        stopMotors();
-        lastDecisionMs = now;
-        enterState(STATE_SETTLE);
+      if (finishTurnIfWallFound(ticks, (uint32_t)cfg.turn180Ticks, true)) {
         break;
       }
 
-      uint32_t slowStart = ((uint32_t)cfg.turn180Ticks * 80UL) / 100UL;
-      int pwm = (ticks >= slowStart)
+      uint32_t searchStart = ((uint32_t)cfg.turn180Ticks * 60UL) / 100UL;
+      int pwm = (ticks >= searchStart)
         ? constrain(cfg.turnSlowPwm, 0, 255)
         : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
+
       setDrive(+pwm, -pwm);
       break;
     }
 
     case STATE_SETTLE:
-      // Avanza un instante al terminar el giro para entrar en el nuevo pasillo.
+      // Ya encontro pared derecha y frente libre.
+      // Avanza brevemente para entrar al nuevo pasillo y luego vuelve al PID.
       {
-        int settlePwm = constrain(cfg.basePwm, MIN_MOVING_PWM, 255);
+        int settlePwm = max(cfg.basePwm, cfg.approachMinPwm);
+        settlePwm = constrain(settlePwm, MIN_MOVING_PWM, 255);
         setDrive(settlePwm, settlePwm);
       }
 
       if (now - stateStartMs >= (uint32_t)cfg.settleMs) {
+        rightOpenStableCount = 0;
+        turnWallStableCount = 0;
+        pendingTurnState = STATE_STOPPED;
         enterState(STATE_FOLLOW);
       }
+      break;
+
+    case STATE_SEARCH_FAIL:
+      stopMotors();
+      running = false;
       break;
   }
 }
@@ -6636,8 +6699,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Mientras el frente esté libre, sigue la pared derecha con PID.
-          Al detectar pared frontal se detiene, decide la salida sin moverse, espera el tiempo configurado y recién entonces gira.
+          Sigue la pared derecha con PID. Si llega a una pared frontal o detecta una apertura derecha estable, se detiene, decide, espera y gira buscando volver a encontrar la pared derecha antes de continuar.
         </div>
       </div>
 
@@ -6648,17 +6710,18 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>PWM minimo aproximacion</span><input class="cfg" id="approachMinPwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
+        <div class="field"><span>Pared derecha reencontrada ADC</span><input class="cfg" id="rightWallAcquireAdc" type="number" step="1"></div>
       </div>
 
       <div class="card">
-        <h2>Giros por encoder</h2>
+        <h2>Giro buscando pared derecha</h2>
         <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>PWM final giro</span><input class="cfg" id="turnSlowPwm" type="number" min="0" max="255" step="1"></div>
-        <div class="field"><span>Giro 90° ticks</span><input class="cfg" id="turn90Ticks" type="number" min="1" step="1"></div>
-        <div class="field"><span>Giro 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
+        <div class="field"><span>Referencia 90° ticks</span><input class="cfg" id="turn90Ticks" type="number" min="1" step="1"></div>
+        <div class="field"><span>Referencia 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="3000" step="10"></div>
         <div class="field"><span>Estabilizacion post-giro ms</span><input class="cfg" id="settleMs" type="number" min="0" step="10"></div>
-        <div class="hint">Calibracion actual: 90° = 160 ticks, 180° = 350 ticks, PWM final = 120. Los giros terminan por suma de ticks de ambos encoders.</div>
+        <div class="hint">Los ticks ahora son una referencia de seguridad. Durante el giro el robot baja a PWM final y busca reencontrar una pared a la derecha con el frente libre. Si no la encuentra dentro del limite de seguridad, se detiene.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6862,7 +6925,7 @@ async function applyConfig(){
   const ids=[
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontSlowAdc','frontWallAdc','approachMinPwm',
-    'rightOpenAdc','leftOpenAdc','turnPwm','turnSlowPwm',
+    'rightOpenAdc','leftOpenAdc','rightWallAcquireAdc','turnPwm','turnSlowPwm',
     'turn90Ticks','turn180Ticks',
     'decisionWaitMs','settleMs'
   ];
@@ -7076,6 +7139,7 @@ void handleStatus() {
   json += "\"approachMinPwm\":" + String(cfg.approachMinPwm) + ",";
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
+  json += "\"rightWallAcquireAdc\":" + String(cfg.rightWallAcquireAdc) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
   json += "\"turnSlowPwm\":" + String(cfg.turnSlowPwm) + ",";
   json += "\"turn90Ticks\":" + String(cfg.turn90Ticks) + ",";
@@ -7107,6 +7171,9 @@ void handleMode() {
   running = false;
   robotState = STATE_STOPPED;
   pendingTurnState = STATE_STOPPED;
+  mazeRightOpeningEvent = false;
+  rightOpenStableCount = 0;
+  turnWallStableCount = 0;
   encoderTestActive = false;
   encoderTestCompleted = false;
   stopMotors();
@@ -7301,6 +7368,9 @@ void handleConfig() {
 
   if (server.hasArg("leftOpenAdc"))
     cfg.leftOpenAdc = constrain(server.arg("leftOpenAdc").toInt(), 0, 4095);
+
+  if (server.hasArg("rightWallAcquireAdc"))
+    cfg.rightWallAcquireAdc = constrain(server.arg("rightWallAcquireAdc").toInt(), 0, 4095);
 
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), MIN_MOVING_PWM, 255);
