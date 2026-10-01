@@ -106,7 +106,15 @@ enum MotorDir : int8_t {
 enum RunMode : uint8_t {
   MODE_TEST = 0,
   MODE_WALL,
-  MODE_MAZE
+  MODE_MAZE,
+  MODE_ENCODER
+};
+
+enum EncoderTestAction : uint8_t {
+  ENC_TEST_NONE = 0,
+  ENC_TEST_RIGHT_90,
+  ENC_TEST_RIGHT_180,
+  ENC_TEST_FORWARD
 };
 
 enum RobotState : uint8_t {
@@ -216,6 +224,16 @@ int motorRightCmd = 0;  // signed
 // Posicion fisica de encoders al iniciar una maniobra de giro.
 int32_t moveStartLeft = 0;
 int32_t moveStartRight = 0;
+
+// Prueba/calibracion independiente de encoders.
+EncoderTestAction encoderTestAction = ENC_TEST_NONE;
+bool encoderTestActive = false;
+bool encoderTestCompleted = false;
+uint32_t encoderTestTarget = 0;
+uint32_t encoderTestStartMs = 0;
+int encoderTestPwm = 155;
+float encoderTestTicksPerCm = TICKS_PER_CM;
+float encoderTestRequestedCm = 0.0f;
 
 // Encoders nativos
 volatile int32_t encoderLeft = 0;
@@ -352,15 +370,91 @@ void captureMoveStart() {
   readPhysicalEncoders(moveStartLeft, moveStartRight);
 }
 
-uint32_t getMoveTicksSum() {
+void getMoveDeltas(uint32_t &deltaLeft, uint32_t &deltaRight) {
   int32_t left;
   int32_t right;
   readPhysicalEncoders(left, right);
 
-  uint32_t deltaLeft = (uint32_t)abs(left - moveStartLeft);
-  uint32_t deltaRight = (uint32_t)abs(right - moveStartRight);
+  deltaLeft = (uint32_t)abs(left - moveStartLeft);
+  deltaRight = (uint32_t)abs(right - moveStartRight);
+}
 
+uint32_t getMoveTicksSum() {
+  uint32_t deltaLeft;
+  uint32_t deltaRight;
+  getMoveDeltas(deltaLeft, deltaRight);
   return deltaLeft + deltaRight;
+}
+
+uint32_t getMoveTicksAverage() {
+  uint32_t deltaLeft;
+  uint32_t deltaRight;
+  getMoveDeltas(deltaLeft, deltaRight);
+  return (deltaLeft + deltaRight) / 2UL;
+}
+
+const char* encoderTestActionName(EncoderTestAction action) {
+  switch (action) {
+    case ENC_TEST_RIGHT_90:  return "DERECHA 90";
+    case ENC_TEST_RIGHT_180: return "DERECHA 180";
+    case ENC_TEST_FORWARD:   return "AVANCE";
+    case ENC_TEST_NONE:
+    default:                 return "NINGUNA";
+  }
+}
+
+void runEncoderTest() {
+  if (!encoderTestActive) {
+    stopMotors();
+    return;
+  }
+
+  // Corte de seguridad adicional. El heartbeat web sigue siendo prioritario.
+  if (millis() - encoderTestStartMs > 20000UL) {
+    encoderTestActive = false;
+    encoderTestCompleted = false;
+    running = false;
+    stopMotors();
+    return;
+  }
+
+  uint32_t progress = 0;
+
+  if (encoderTestAction == ENC_TEST_FORWARD) {
+    // Para distancia se usa el promedio de ambas ruedas.
+    progress = getMoveTicksAverage();
+  } else {
+    // Para giros se usa la suma absoluta, igual que en el Maze Solver.
+    progress = getMoveTicksSum();
+  }
+
+  if (progress >= encoderTestTarget) {
+    encoderTestActive = false;
+    encoderTestCompleted = true;
+    running = false;
+    stopMotors();
+    return;
+  }
+
+  int pwm = constrain(encoderTestPwm, MIN_MOVING_PWM, 255);
+
+  switch (encoderTestAction) {
+    case ENC_TEST_RIGHT_90:
+    case ENC_TEST_RIGHT_180:
+      setDrive(+pwm, -pwm);
+      break;
+
+    case ENC_TEST_FORWARD:
+      setDrive(+pwm, +pwm);
+      break;
+
+    case ENC_TEST_NONE:
+    default:
+      encoderTestActive = false;
+      running = false;
+      stopMotors();
+      break;
+  }
 }
 
 // ============================================================
@@ -520,10 +614,11 @@ const char* stateName(RobotState s) {
 
 const char* modeName(RunMode m) {
   switch (m) {
-    case MODE_WALL: return "WALL";
-    case MODE_MAZE: return "MAZE";
+    case MODE_WALL:    return "WALL";
+    case MODE_MAZE:    return "MAZE";
+    case MODE_ENCODER: return "ENCODER";
     case MODE_TEST:
-    default:        return "TEST";
+    default:           return "TEST";
   }
 }
 
@@ -670,6 +765,11 @@ void updateControl() {
 
   if (activeMode == MODE_MAZE) {
     runMaze();
+    return;
+  }
+
+  if (activeMode == MODE_ENCODER) {
+    runEncoderTest();
     return;
   }
 
@@ -6381,6 +6481,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
     <button class="tabbtn active" id="tabBtnTest" onclick="showTab('test')">Sensores / Motores / Encoders</button>
     <button class="tabbtn" id="tabBtnWall" onclick="showTab('wall')">PID pared derecha</button>
     <button class="tabbtn" id="tabBtnMaze" onclick="showTab('maze')">Resolver laberinto</button>
+    <button class="tabbtn" id="tabBtnEncoder" onclick="showTab('encoder')">Calibrar encoders</button>
   </div>
 
   <!-- ====================================================== -->
@@ -6542,6 +6643,66 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
     </div>
   </section>
 
+  <!-- ====================================================== -->
+  <!-- TAB 4: CALIBRACION DE ENCODERS -->
+  <!-- ====================================================== -->
+  <section class="panel" id="panelEncoder">
+    <div class="grid">
+
+      <div class="card">
+        <h2>Calibracion de encoders</h2>
+        <div class="status" id="calState">DETENIDO</div>
+        <div class="hint">
+          Cada prueba toma una referencia nueva de ambos encoders y se detiene automaticamente.
+          Para giros se usa la suma |ΔL| + |ΔR|. Para distancia se usa el promedio (|ΔL| + |ΔR|) / 2.
+        </div>
+        <div class="field"><span>PWM de prueba</span><input id="calPwm" type="number" min="155" max="255" step="1" value="155"></div>
+        <button class="full stop" onclick="stopAll()">STOP</button>
+      </div>
+
+      <div class="card">
+        <h2>Giro derecha 90°</h2>
+        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal90Ticks" type="number" min="1" step="1" value="251"></div>
+        <button class="full start" onclick="startEncoderTest('R90')">PROBAR 90° DERECHA</button>
+        <button class="full" onclick="saveEncoderTurn('90')">USAR COMO 90° EN MAZE</button>
+        <div class="hint">Ajusta los ticks hasta que fisicamente quede exactamente a 90°.</div>
+      </div>
+
+      <div class="card">
+        <h2>Giro derecha 180°</h2>
+        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal180Ticks" type="number" min="1" step="1" value="501"></div>
+        <button class="full start" onclick="startEncoderTest('R180')">PROBAR 180° DERECHA</button>
+        <button class="full" onclick="saveEncoderTurn('180')">USAR COMO 180° EN MAZE</button>
+        <div class="hint">El giro se detiene por encoder, no por tiempo.</div>
+      </div>
+
+      <div class="card">
+        <h2>Avance por distancia</h2>
+        <div class="field"><span>Distancia ordenada (cm)</span><input id="calCm" type="number" min="0.5" max="200" step="0.5" value="20"></div>
+        <div class="field"><span>Ticks por cm</span><input id="calTicksPerCm" type="number" min="0.1" max="200" step="0.01" value="20.95"></div>
+        <button class="full start" onclick="startEncoderTest('FWD')">AVANZAR X CM</button>
+        <div class="field"><span>Distancia real medida (cm)</span><input id="calMeasuredCm" type="number" min="0.1" max="300" step="0.1" value="20"></div>
+        <button class="full" onclick="calculateTicksPerCm()">CALCULAR TICKS/CM CON RESULTADO</button>
+        <div class="hint">Despues de medir con regla la distancia real recorrida, el boton calcula: promedio de ticks / centimetros reales.</div>
+      </div>
+
+      <div class="card">
+        <h2>Resultado en vivo</h2>
+        <div class="metric-grid">
+          <div class="metric"><div class="label">Encoder izquierdo</div><div class="value" id="calEncL">0</div></div>
+          <div class="metric"><div class="label">Encoder derecho</div><div class="value" id="calEncR">0</div></div>
+          <div class="metric"><div class="label">Δ izquierdo</div><div class="value" id="calDeltaL">0</div></div>
+          <div class="metric"><div class="label">Δ derecho</div><div class="value" id="calDeltaR">0</div></div>
+          <div class="metric"><div class="label">Suma |ΔL|+|ΔR|</div><div class="value" id="calSum">0</div></div>
+          <div class="metric"><div class="label">Promedio</div><div class="value" id="calAvg">0</div></div>
+          <div class="metric"><div class="label">Objetivo activo</div><div class="value" id="calTarget">0</div></div>
+          <div class="metric"><div class="label">Progreso</div><div class="value" id="calProgress">0%</div></div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
   <div class="footer-note">
     <span><strong>RMP ROBOTICS</strong> · AUS_KIM</span>
     <span>ESP32-S3 · DRV8833 · 4× Sharp GP2Y0E03</span>
@@ -6560,12 +6721,12 @@ function panelName(tab){
 async function showTab(tab){
   activeTab=tab;
 
-  ['test','wall','maze'].forEach(t=>{
+  ['test','wall','maze','encoder'].forEach(t=>{
     document.getElementById('panel'+panelName(t)).classList.toggle('active',t===tab);
     document.getElementById('tabBtn'+panelName(t)).classList.toggle('active',t===tab);
   });
 
-  const mode = tab==='test' ? 'TEST' : (tab==='wall' ? 'WALL' : 'MAZE');
+  const mode = tab==='test' ? 'TEST' : (tab==='wall' ? 'WALL' : (tab==='maze' ? 'MAZE' : 'ENCODER'));
   await fetch('/api/mode?mode='+mode,{cache:'no-store'});
   await updateStatus();
 }
@@ -6623,6 +6784,40 @@ bindHold('rightReverse','R','R');
 
 async function resetEncoders(){
   await fetch('/api/reset_encoders',{cache:'no-store'});
+}
+
+async function startEncoderTest(action){
+  const pwm=Math.max(155,Math.min(255,parseInt(document.getElementById('calPwm').value||'155',10)));
+  const p=new URLSearchParams({action:action,pwm:String(pwm)});
+
+  if(action==='R90'){
+    p.set('ticks',document.getElementById('cal90Ticks').value);
+  }else if(action==='R180'){
+    p.set('ticks',document.getElementById('cal180Ticks').value);
+  }else if(action==='FWD'){
+    p.set('cm',document.getElementById('calCm').value);
+    p.set('ticksPerCm',document.getElementById('calTicksPerCm').value);
+  }
+
+  await fetch('/api/encoder_test?'+p.toString(),{cache:'no-store'});
+  await updateStatus();
+}
+
+async function saveEncoderTurn(angle){
+  const id=angle==='90' ? 'cal90Ticks' : 'cal180Ticks';
+  const key=angle==='90' ? 'turn90Ticks' : 'turn180Ticks';
+  const p=new URLSearchParams();
+  p.set(key,document.getElementById(id).value);
+  await fetch('/api/config?'+p.toString(),{cache:'no-store'});
+  await updateStatus();
+}
+
+function calculateTicksPerCm(){
+  const realCm=parseFloat(document.getElementById('calMeasuredCm').value||'0');
+  const avg=parseFloat(document.getElementById('calAvg').textContent||'0');
+  if(realCm>0 && avg>0){
+    document.getElementById('calTicksPerCm').value=(avg/realCm).toFixed(3);
+  }
 }
 
 async function applyConfig(){
@@ -6700,6 +6895,19 @@ async function updateStatus(){
     document.getElementById('mError').textContent=d.pid.error.toFixed(1);
     document.getElementById('mCorrection').textContent=d.pid.correction.toFixed(1);
 
+    // CALIBRACION ENCODERS
+    document.getElementById('calState').textContent=
+      d.encoderTest.active ? d.encoderTest.action :
+      (d.encoderTest.completed ? 'COMPLETADO · '+d.encoderTest.action : 'DETENIDO');
+    document.getElementById('calEncL').textContent=d.enc.left;
+    document.getElementById('calEncR').textContent=d.enc.right;
+    document.getElementById('calDeltaL').textContent=d.encoderTest.deltaLeft;
+    document.getElementById('calDeltaR').textContent=d.encoderTest.deltaRight;
+    document.getElementById('calSum').textContent=d.encoderTest.sum;
+    document.getElementById('calAvg').textContent=d.encoderTest.average;
+    document.getElementById('calTarget').textContent=d.encoderTest.target;
+    document.getElementById('calProgress').textContent=d.encoderTest.progress.toFixed(1)+'%';
+
     if(firstLoad){
       Object.keys(d.config).forEach(k=>{
         const el=document.getElementById(k);
@@ -6707,6 +6915,10 @@ async function updateStatus(){
       });
 
       document.getElementById('manualPwmTest').value=d.config.manualPwm;
+      document.getElementById('calPwm').value=Math.max(155,d.config.turnPwm);
+      document.getElementById('cal90Ticks').value=d.config.turn90Ticks;
+      document.getElementById('cal180Ticks').value=d.config.turn180Ticks;
+      document.getElementById('calTicksPerCm').value=d.encoderTest.ticksPerCm.toFixed(2);
       firstLoad=false;
     }
   }catch(_){}
@@ -6742,8 +6954,20 @@ void handleStatus() {
   encPhysicalRight = -encoderLeft;
   interrupts();
 
+  uint32_t encTestDeltaLeft = 0;
+  uint32_t encTestDeltaRight = 0;
+  getMoveDeltas(encTestDeltaLeft, encTestDeltaRight);
+  uint32_t encTestSum = encTestDeltaLeft + encTestDeltaRight;
+  uint32_t encTestAverage = encTestSum / 2UL;
+  uint32_t encTestProgressTicks =
+    (encoderTestAction == ENC_TEST_FORWARD) ? encTestAverage : encTestSum;
+  float encTestProgress =
+    (encoderTestTarget > 0)
+      ? (100.0f * (float)encTestProgressTicks / (float)encoderTestTarget)
+      : 0.0f;
+
   String json;
-  json.reserve(1500);
+  json.reserve(2000);
 
   json += "{";
   json += "\"running\":" + String(running ? "true" : "false") + ",";
@@ -6788,6 +7012,20 @@ void handleStatus() {
   json += "\"rb\":" + String(digitalRead(PIN_ENC_L_B));
   json += "},";
 
+  json += "\"encoderTest\":{";
+  json += "\"active\":" + String(encoderTestActive ? "true" : "false") + ",";
+  json += "\"completed\":" + String(encoderTestCompleted ? "true" : "false") + ",";
+  json += "\"action\":\"" + String(encoderTestActionName(encoderTestAction)) + "\",";
+  json += "\"target\":" + String(encoderTestTarget) + ",";
+  json += "\"deltaLeft\":" + String(encTestDeltaLeft) + ",";
+  json += "\"deltaRight\":" + String(encTestDeltaRight) + ",";
+  json += "\"sum\":" + String(encTestSum) + ",";
+  json += "\"average\":" + String(encTestAverage) + ",";
+  json += "\"progress\":" + String(encTestProgress, 2) + ",";
+  json += "\"ticksPerCm\":" + String(encoderTestTicksPerCm, 3) + ",";
+  json += "\"requestedCm\":" + String(encoderTestRequestedCm, 2);
+  json += "},";
+
   json += "\"config\":{";
   json += "\"kp\":" + String(cfg.kp, 4) + ",";
   json += "\"ki\":" + String(cfg.ki, 4) + ",";
@@ -6829,6 +7067,8 @@ void handleMode() {
   // Siempre se detiene al cambiar de modo.
   running = false;
   robotState = STATE_STOPPED;
+  encoderTestActive = false;
+  encoderTestCompleted = false;
   stopMotors();
   resetPid();
 
@@ -6838,8 +7078,10 @@ void handleMode() {
     activeMode = MODE_WALL;
   } else if (mode == "MAZE") {
     activeMode = MODE_MAZE;
+  } else if (mode == "ENCODER") {
+    activeMode = MODE_ENCODER;
   } else {
-    server.send(400, "text/plain", "mode debe ser TEST, WALL o MAZE");
+    server.send(400, "text/plain", "mode debe ser TEST, WALL, MAZE o ENCODER");
     return;
   }
 
@@ -6916,6 +7158,75 @@ void handleMotor() {
 
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "OK");
+}
+
+void handleEncoderTest() {
+  if (activeMode != MODE_ENCODER) {
+    server.send(403, "text/plain", "Prueba de encoder solo disponible en modo ENCODER");
+    return;
+  }
+
+  if (!server.hasArg("action")) {
+    server.send(400, "text/plain", "Parametro requerido: action");
+    return;
+  }
+
+  String action = server.arg("action");
+
+  if (action == "STOP") {
+    encoderTestActive = false;
+    encoderTestCompleted = false;
+    running = false;
+    stopMotors();
+    server.send(200, "text/plain", "STOP");
+    return;
+  }
+
+  encoderTestPwm = server.hasArg("pwm")
+    ? constrain(server.arg("pwm").toInt(), MIN_MOVING_PWM, 255)
+    : MIN_MOVING_PWM;
+
+  encoderTestRequestedCm = 0.0f;
+
+  if (action == "R90") {
+    encoderTestAction = ENC_TEST_RIGHT_90;
+    encoderTestTarget = server.hasArg("ticks")
+      ? (uint32_t)constrain(server.arg("ticks").toInt(), 1, 5000)
+      : (uint32_t)cfg.turn90Ticks;
+  } else if (action == "R180") {
+    encoderTestAction = ENC_TEST_RIGHT_180;
+    encoderTestTarget = server.hasArg("ticks")
+      ? (uint32_t)constrain(server.arg("ticks").toInt(), 1, 10000)
+      : (uint32_t)cfg.turn180Ticks;
+  } else if (action == "FWD") {
+    encoderTestAction = ENC_TEST_FORWARD;
+
+    float cm = server.hasArg("cm") ? server.arg("cm").toFloat() : 20.0f;
+    float ticksPerCm = server.hasArg("ticksPerCm")
+      ? server.arg("ticksPerCm").toFloat()
+      : TICKS_PER_CM;
+
+    cm = constrain(cm, 0.5f, 200.0f);
+    ticksPerCm = constrain(ticksPerCm, 0.1f, 200.0f);
+
+    encoderTestRequestedCm = cm;
+    encoderTestTicksPerCm = ticksPerCm;
+
+    // En avance el objetivo es el promedio de ticks de ambas ruedas.
+    encoderTestTarget = (uint32_t)roundf(cm * ticksPerCm);
+  } else {
+    server.send(400, "text/plain", "action debe ser R90, R180, FWD o STOP");
+    return;
+  }
+
+  captureMoveStart();
+  encoderTestStartMs = millis();
+  encoderTestCompleted = false;
+  encoderTestActive = true;
+  running = true;
+  lastHeartbeatMs = millis();
+
+  server.send(200, "text/plain", "RUN");
 }
 
 void handleConfig() {
@@ -7001,6 +7312,8 @@ void handlePing() {
 void handleStop() {
   running = false;
   robotState = STATE_STOPPED;
+  encoderTestActive = false;
+  encoderTestCompleted = false;
   stopMotors();
   resetPid();
   lastHeartbeatMs = millis();
@@ -7059,6 +7372,7 @@ void setup() {
   server.on("/api/mode", HTTP_GET, handleMode);
   server.on("/api/run", HTTP_GET, handleRun);
   server.on("/api/motor", HTTP_GET, handleMotor);
+  server.on("/api/encoder_test", HTTP_GET, handleEncoderTest);
   server.on("/api/config", HTTP_GET, handleConfig);
   server.on("/api/reset_encoders", HTTP_GET, handleResetEncoders);
   server.on("/api/ping", HTTP_GET, handlePing);
