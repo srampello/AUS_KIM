@@ -147,7 +147,7 @@ struct ControlConfig {
   // Deteccion de laberinto
   // frontSlowAdc: comienza a desacelerar.
   // frontWallAdc: STOP completo y decision.
-  int frontSlowAdc = 2050;
+  int frontSlowAdc = 1900;
   int frontWallAdc = 2150;
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
