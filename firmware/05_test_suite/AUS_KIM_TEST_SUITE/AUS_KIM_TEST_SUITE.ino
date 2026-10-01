@@ -148,14 +148,14 @@ struct ControlConfig {
   // frontSlowAdc: comienza a desacelerar.
   // frontWallAdc: STOP completo y decision.
   int frontSlowAdc = 1900;
-  int frontWallAdc = 2150;
+  int frontWallAdc = 2000;
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
   int approachMinPwm = 165;
 
   // Maniobras por encoder - nueva calibracion.
   int turnPwm = 165;
-  int turnSlowPwm = 160;
+  int turnSlowPwm = 120;
   int turn90Ticks = 160;
   int turn180Ticks = 350;
 
@@ -695,7 +695,10 @@ void runMaze() {
         break;
       }
 
-      int pwm = constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
+      uint32_t slowStart = ((uint32_t)cfg.turn90Ticks * 80UL) / 100UL;
+      int pwm = (ticks >= slowStart)
+        ? constrain(cfg.turnSlowPwm, 0, 255)
+        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
       setDrive(+pwm, -pwm);
       break;
     }
@@ -710,7 +713,10 @@ void runMaze() {
         break;
       }
 
-      int pwm = constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
+      uint32_t slowStart = ((uint32_t)cfg.turn90Ticks * 80UL) / 100UL;
+      int pwm = (ticks >= slowStart)
+        ? constrain(cfg.turnSlowPwm, 0, 255)
+        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
       setDrive(-pwm, +pwm);
       break;
     }
@@ -725,7 +731,10 @@ void runMaze() {
         break;
       }
 
-      int pwm = constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
+      uint32_t slowStart = ((uint32_t)cfg.turn180Ticks * 80UL) / 100UL;
+      int pwm = (ticks >= slowStart)
+        ? constrain(cfg.turnSlowPwm, 0, 255)
+        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
       setDrive(+pwm, -pwm);
       break;
     }
@@ -6616,12 +6625,11 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
       <div class="card">
         <h2>Giros por encoder</h2>
         <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="155" max="255" step="1"></div>
-        <div class="field"><span>PWM final giro</span><input class="cfg" id="turnSlowPwm" type="number" min="155" max="255" step="1"></div>
+        <div class="field"><span>PWM final giro</span><input class="cfg" id="turnSlowPwm" type="number" min="0" max="255" step="1"></div>
         <div class="field"><span>Giro 90° ticks</span><input class="cfg" id="turn90Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Giro 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Estabilizacion post-giro ms</span><input class="cfg" id="settleMs" type="number" min="0" step="10"></div>
-        <div class="field"><span>Cooldown cruce ms</span><input class="cfg" id="junctionCooldownMs" type="number" min="0" step="10"></div>
-        <div class="hint">Calibracion actual: 90° = 160 ticks, 180° = 350 ticks. Los giros terminan por suma de ticks de ambos encoders.</div>
+        <div class="hint">Calibracion actual: 90° = 160 ticks, 180° = 350 ticks, PWM final = 120. Los giros terminan por suma de ticks de ambos encoders.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6827,7 +6835,7 @@ async function applyConfig(){
     'frontSlowAdc','frontWallAdc','approachMinPwm',
     'rightOpenAdc','leftOpenAdc','turnPwm','turnSlowPwm',
     'turn90Ticks','turn180Ticks',
-    'settleMs','junctionCooldownMs'
+    'settleMs'
   ];
 
   const p=new URLSearchParams();
@@ -7267,7 +7275,7 @@ void handleConfig() {
     cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), MIN_MOVING_PWM, 255);
 
   if (server.hasArg("turnSlowPwm"))
-    cfg.turnSlowPwm = constrain(server.arg("turnSlowPwm").toInt(), MIN_MOVING_PWM, 255);
+    cfg.turnSlowPwm = constrain(server.arg("turnSlowPwm").toInt(), 0, 255);
 
   if (server.hasArg("turn90Ticks"))
     cfg.turn90Ticks = constrain(server.arg("turn90Ticks").toInt(), 1, 5000);
