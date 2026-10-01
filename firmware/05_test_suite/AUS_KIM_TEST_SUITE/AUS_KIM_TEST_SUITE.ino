@@ -7080,6 +7080,10 @@ void handleMode() {
     activeMode = MODE_MAZE;
   } else if (mode == "ENCODER") {
     activeMode = MODE_ENCODER;
+    encoderTestAction = ENC_TEST_NONE;
+    encoderTestTarget = 0;
+    encoderTestRequestedCm = 0.0f;
+    captureMoveStart();
   } else {
     server.send(400, "text/plain", "mode debe ser TEST, WALL, MAZE o ENCODER");
     return;
@@ -7095,8 +7099,8 @@ void handleRun() {
     return;
   }
 
-  if (activeMode == MODE_TEST) {
-    server.send(400, "text/plain", "Modo TEST no usa run autonomo");
+  if (activeMode == MODE_TEST || activeMode == MODE_ENCODER) {
+    server.send(400, "text/plain", "Este modo no usa /api/run");
     return;
   }
 
@@ -7413,6 +7417,8 @@ void loop() {
   if (motorsRunning && (now - lastHeartbeatMs > WEB_FAILSAFE_MS)) {
     running = false;
     robotState = STATE_STOPPED;
+    encoderTestActive = false;
+    encoderTestCompleted = false;
     stopMotors();
     resetPid();
     Serial.println("FAIL-SAFE: motores detenidos por perdida de comunicacion.");
