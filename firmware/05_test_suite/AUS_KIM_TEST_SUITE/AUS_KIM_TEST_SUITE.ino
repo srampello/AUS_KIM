@@ -136,9 +136,9 @@ struct SensorData {
 
 struct ControlConfig {
   // PID pared derecha - calibracion AUS_KIM 30/09/2026
-  float kp = 0.08f;
+  float kp = 0.065f;
   float ki = 0.0f;
-  float kd = 0.80f;
+  float kd = 1.00f;
 
   int targetRightAdc = 2300;
   int basePwm = 155;
@@ -148,21 +148,20 @@ struct ControlConfig {
   // frontSlowAdc: comienza a desacelerar.
   // frontWallAdc: STOP completo y decision.
   int frontSlowAdc = 2050;
-  int frontWallAdc = 2300;
+  int frontWallAdc = 2150;
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
-  int approachMinPwm = 155;
+  int approachMinPwm = 165;
 
-  // Maniobras por encoder.
-  // Para esta etapa de prueba se gira de forma controlada a 155 PWM.
-  int turnPwm = 155;
-  int turnSlowPwm = 155;
-  int turn90Ticks = 251;
-  int turn180Ticks = 501;
+  // Maniobras por encoder - nueva calibracion.
+  int turnPwm = 165;
+  int turnSlowPwm = 160;
+  int turn90Ticks = 160;
+  int turn180Ticks = 350;
 
   // El centrado previo a derecha sigue temporal hasta calibrarlo fisicamente.
   int rightAdvanceMs = 140;
-  int settleMs = 90;
+  int settleMs = 150;
   int junctionCooldownMs = 250;
 
   // Campos legacy: ya NO gobiernan los giros.
@@ -643,7 +642,9 @@ void runMaze() {
       // Mientras el frente este libre, NO se toman decisiones por aperturas
       // laterales. El robot solamente avanza siguiendo la pared derecha.
       if (front < cfg.frontWallAdc) {
-        followRightWallAtPwm(cfg.basePwm);
+        // En Maze usamos como piso el PWM minimo de aproximacion calibrado.
+        int mazePwm = max(cfg.basePwm, cfg.approachMinPwm);
+        followRightWallAtPwm(mazePwm);
         break;
       }
 
@@ -6620,7 +6621,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>Giro 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Estabilizacion post-giro ms</span><input class="cfg" id="settleMs" type="number" min="0" step="10"></div>
         <div class="field"><span>Cooldown cruce ms</span><input class="cfg" id="junctionCooldownMs" type="number" min="0" step="10"></div>
-        <div class="hint">Los giros de 90° y 180° terminan por suma de ticks de ambos encoders. En este modo ninguna apertura lateral provoca un giro mientras el frente esté libre.</div>
+        <div class="hint">Calibracion actual: 90° = 160 ticks, 180° = 350 ticks. Los giros terminan por suma de ticks de ambos encoders.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
