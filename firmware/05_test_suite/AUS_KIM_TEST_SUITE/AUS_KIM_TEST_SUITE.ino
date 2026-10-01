@@ -120,8 +120,9 @@ enum EncoderTestAction : uint8_t {
 enum RobotState : uint8_t {
   STATE_STOPPED = 0,
   STATE_FOLLOW,
-  STATE_BRAKE,       // Frenado antes de decidir frente a una pared
-  STATE_PRE_RIGHT,   // Avance corto para centrar una apertura derecha
+  STATE_BRAKE,         // Frenado antes de decidir frente a una pared
+  STATE_DECISION_WAIT, // Salida elegida: espera detenido antes de girar
+  STATE_PRE_RIGHT,     // Compatibilidad; no se usa en modo simple
   STATE_TURN_RIGHT,
   STATE_TURN_LEFT,
   STATE_UTURN,
@@ -161,6 +162,7 @@ struct ControlConfig {
 
   // El centrado previo a derecha sigue temporal hasta calibrarlo fisicamente.
   int rightAdvanceMs = 140;
+  int decisionWaitMs = 200;  // espera detenido despues de elegir salida
   int settleMs = 150;
   int junctionCooldownMs = 250;
 
@@ -200,6 +202,7 @@ RunMode activeMode = MODE_TEST;
 bool running = false;
 
 RobotState robotState = STATE_STOPPED;
+RobotState pendingTurnState = STATE_STOPPED;
 uint32_t stateStartMs = 0;
 uint32_t lastDecisionMs = 0;
 uint32_t lastControlMs = 0;
@@ -600,8 +603,9 @@ int calculateApproachPwm() {
 const char* stateName(RobotState s) {
   switch (s) {
     case STATE_FOLLOW:      return "SIGUIENDO PARED";
-    case STATE_BRAKE:       return "FRENANDO / DECIDIENDO";
-    case STATE_PRE_RIGHT:   return "CENTRANDO PARA DERECHA";
+    case STATE_BRAKE:         return "FRENANDO / DECIDIENDO";
+    case STATE_DECISION_WAIT: return "SALIDA ELEGIDA / ESPERANDO";
+    case STATE_PRE_RIGHT:     return "CENTRANDO PARA DERECHA";
     case STATE_TURN_RIGHT:  return "GIRO DERECHA";
     case STATE_TURN_LEFT:   return "GIRO IZQUIERDA";
     case STATE_UTURN:       return "GIRO 180";
@@ -657,24 +661,48 @@ void runMaze() {
     case STATE_BRAKE:
       stopMotors();
 
-      // Esperar a que desaparezca la inercia antes de leer laterales.
+      // Primero queda completamente quieto para que la lectura lateral
+      // no este afectada por la inercia del avance.
       if (now - stateStartMs < BRAKE_SETTLE_MS) {
         break;
       }
 
-      // Regla de mano derecha, pero evaluada SOLO frente a una pared:
-      // 1) derecha libre -> giro derecha 90
-      // 2) derecha cerrada e izquierda libre -> giro izquierda 90
-      // 3) ambas cerradas -> giro 180
+      // Decide SIN mover el robot.
+      // Regla de mano derecha:
+      // 1) derecha libre -> 90 derecha
+      // 2) derecha cerrada e izquierda libre -> 90 izquierda
+      // 3) ambas cerradas -> 180
       if (rightOpen) {
-        captureMoveStart();
-        enterState(STATE_TURN_RIGHT);
+        pendingTurnState = STATE_TURN_RIGHT;
       } else if (leftOpen) {
-        captureMoveStart();
-        enterState(STATE_TURN_LEFT);
+        pendingTurnState = STATE_TURN_LEFT;
       } else {
-        captureMoveStart();
-        enterState(STATE_UTURN);
+        pendingTurnState = STATE_UTURN;
+      }
+
+      // La salida ya fue elegida, pero todavia no se mueve.
+      enterState(STATE_DECISION_WAIT);
+      break;
+
+    case STATE_DECISION_WAIT:
+      stopMotors();
+
+      // Mantiene el robot detenido unos ms despues de encontrar la salida.
+      if (now - stateStartMs < (uint32_t)cfg.decisionWaitMs) {
+        break;
+      }
+
+      // La referencia de encoder se toma justo antes de comenzar el giro.
+      captureMoveStart();
+
+      if (
+        pendingTurnState == STATE_TURN_RIGHT ||
+        pendingTurnState == STATE_TURN_LEFT ||
+        pendingTurnState == STATE_UTURN
+      ) {
+        enterState(pendingTurnState);
+      } else {
+        enterState(STATE_FOLLOW);
       }
       break;
 
@@ -6608,8 +6636,8 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Modo de prueba: mientras el frente esté libre, el robot solo sigue la pared derecha con PID.
-          Recién al detectar pared frontal se detiene y decide: derecha, izquierda o giro 180°.
+          Mientras el frente esté libre, sigue la pared derecha con PID.
+          Al detectar pared frontal se detiene, decide la salida sin moverse, espera el tiempo configurado y recién entonces gira.
         </div>
       </div>
 
@@ -6628,6 +6656,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>PWM final giro</span><input class="cfg" id="turnSlowPwm" type="number" min="0" max="255" step="1"></div>
         <div class="field"><span>Giro 90° ticks</span><input class="cfg" id="turn90Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Giro 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
+        <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="3000" step="10"></div>
         <div class="field"><span>Estabilizacion post-giro ms</span><input class="cfg" id="settleMs" type="number" min="0" step="10"></div>
         <div class="hint">Calibracion actual: 90° = 160 ticks, 180° = 350 ticks, PWM final = 120. Los giros terminan por suma de ticks de ambos encoders.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
@@ -6835,7 +6864,7 @@ async function applyConfig(){
     'frontSlowAdc','frontWallAdc','approachMinPwm',
     'rightOpenAdc','leftOpenAdc','turnPwm','turnSlowPwm',
     'turn90Ticks','turn180Ticks',
-    'settleMs'
+    'decisionWaitMs','settleMs'
   ];
 
   const p=new URLSearchParams();
@@ -7052,6 +7081,7 @@ void handleStatus() {
   json += "\"turn90Ticks\":" + String(cfg.turn90Ticks) + ",";
   json += "\"turn180Ticks\":" + String(cfg.turn180Ticks) + ",";
   json += "\"rightAdvanceMs\":" + String(cfg.rightAdvanceMs) + ",";
+  json += "\"decisionWaitMs\":" + String(cfg.decisionWaitMs) + ",";
   json += "\"rightTurnMs\":" + String(cfg.rightTurnMs) + ",";
   json += "\"leftTurnMs\":" + String(cfg.leftTurnMs) + ",";
   json += "\"uTurnMs\":" + String(cfg.uTurnMs) + ",";
@@ -7076,6 +7106,7 @@ void handleMode() {
   // Siempre se detiene al cambiar de modo.
   running = false;
   robotState = STATE_STOPPED;
+  pendingTurnState = STATE_STOPPED;
   encoderTestActive = false;
   encoderTestCompleted = false;
   stopMotors();
@@ -7286,6 +7317,9 @@ void handleConfig() {
   if (server.hasArg("rightAdvanceMs"))
     cfg.rightAdvanceMs = constrain(server.arg("rightAdvanceMs").toInt(), 0, 2000);
 
+  if (server.hasArg("decisionWaitMs"))
+    cfg.decisionWaitMs = constrain(server.arg("decisionWaitMs").toInt(), 0, 3000);
+
   if (server.hasArg("rightTurnMs"))
     cfg.rightTurnMs = constrain(server.arg("rightTurnMs").toInt(), 0, 3000);
 
@@ -7325,6 +7359,7 @@ void handlePing() {
 void handleStop() {
   running = false;
   robotState = STATE_STOPPED;
+  pendingTurnState = STATE_STOPPED;
   encoderTestActive = false;
   encoderTestCompleted = false;
   stopMotors();
@@ -7426,6 +7461,7 @@ void loop() {
   if (motorsRunning && (now - lastHeartbeatMs > WEB_FAILSAFE_MS)) {
     running = false;
     robotState = STATE_STOPPED;
+    pendingTurnState = STATE_STOPPED;
     encoderTestActive = false;
     encoderTestCompleted = false;
     stopMotors();
