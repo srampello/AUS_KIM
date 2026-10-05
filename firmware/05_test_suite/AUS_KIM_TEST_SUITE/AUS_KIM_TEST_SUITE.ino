@@ -120,15 +120,11 @@ enum EncoderTestAction : uint8_t {
 enum RobotState : uint8_t {
   STATE_STOPPED = 0,
   STATE_FOLLOW,
-  STATE_BRAKE,         // Frenado antes de decidir frente a una pared
-  STATE_DECISION_WAIT, // Salida elegida: espera detenido antes de girar
-  STATE_PRE_RIGHT,     // Compatibilidad; no se usa en modo simple
+  STATE_BRAKE,
+  STATE_DECISION_WAIT,
   STATE_TURN_RIGHT,
   STATE_TURN_LEFT,
-  STATE_UTURN,
-  STATE_FIND_RIGHT_WALL,
-  STATE_SETTLE,
-  STATE_SEARCH_FAIL
+  STATE_UTURN
 };
 
 struct SensorData {
@@ -159,16 +155,7 @@ struct ControlConfig {
 
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
-
-  // Durante un giro, se considera que la pared derecha fue reencontrada
-  // cuando el lateral derecho supera este ADC.
-  int rightWallAcquireAdc = 2000;
-
   int approachMinPwm = 165;
-
-  // Cuando no hay pared lateral valida, los encoders mantienen la recta.
-  float straightEncoderKp = 1.0f;
-  int straightEncoderMaxCorrection = 20;
 
   // Maniobras por encoder - nueva calibracion.
   int turnPwm = 165;
@@ -176,16 +163,8 @@ struct ControlConfig {
   int turn90Ticks = 160;
   int turn180Ticks = 350;
 
-  // El centrado previo a derecha sigue temporal hasta calibrarlo fisicamente.
-  int rightAdvanceMs = 140;
-  int decisionWaitMs = 200;  // espera detenido despues de elegir salida
-  int settleMs = 150;
-  int junctionCooldownMs = 250;
-
-  // Campos legacy: ya NO gobiernan los giros.
-  int rightTurnMs = 310;
-  int leftTurnMs = 310;
-  int uTurnMs = 620;
+  // Pausa detenido luego de decidir y antes de comenzar el giro.
+  int decisionWaitMs = 200;
 
   // Prueba manual
   int manualPwm = 80;
@@ -232,28 +211,6 @@ bool leftOpen = false;
 
 // Pared frontal confirmada durante varias muestras.
 uint8_t frontWallStableCount = 0;
-
-// Estado con histeresis: se adquiere pared a rightWallAcquireAdc y
-// no se considera perdida hasta bajar de rightOpenAdc.
-bool rightWallControlActive = false;
-
-// Referencia de encoders para mantener recta cuando no hay pared.
-int32_t straightStartLeft = 0;
-int32_t straightStartRight = 0;
-float straightEncoderCorrection = 0.0f;
-
-// "Wall break": evento cuando habia pared derecha y deja de haberla.
-// Por ahora solo se usa como referencia/telemetria, no obliga un giro.
-uint32_t rightWallBreakCount = 0;
-int32_t lastWallBreakLeft = 0;
-int32_t lastWallBreakRight = 0;
-
-// Confirmacion temporal para no reaccionar a una sola muestra lateral.
-uint8_t rightOpenStableCount = 0;
-uint8_t turnWallStableCount = 0;
-
-// Recuerda si el evento que detuvo al robot fue una apertura a la derecha.
-bool mazeRightOpeningEvent = false;
 
 float errorPid = 0.0f;
 float prevErrorPid = 0.0f;
@@ -436,46 +393,6 @@ uint32_t getMoveTicksAverage() {
   return (deltaLeft + deltaRight) / 2UL;
 }
 
-void captureStraightReference() {
-  readPhysicalEncoders(straightStartLeft, straightStartRight);
-  straightEncoderCorrection = 0.0f;
-}
-
-uint32_t getTicksSinceWallBreak() {
-  int32_t left;
-  int32_t right;
-  readPhysicalEncoders(left, right);
-
-  uint32_t dl = (uint32_t)abs(left - lastWallBreakLeft);
-  uint32_t dr = (uint32_t)abs(right - lastWallBreakRight);
-  return (dl + dr) / 2UL;
-}
-
-void driveStraightWithEncoders(int basePwm) {
-  int32_t left;
-  int32_t right;
-  readPhysicalEncoders(left, right);
-
-  int32_t dl = abs(left - straightStartLeft);
-  int32_t dr = abs(right - straightStartRight);
-  int32_t error = dl - dr;
-
-  straightEncoderCorrection =
-    constrain(cfg.straightEncoderKp * (float)error,
-              -(float)cfg.straightEncoderMaxCorrection,
-              (float)cfg.straightEncoderMaxCorrection);
-
-  basePwm = constrain(basePwm, MIN_MOVING_PWM, 255);
-
-  int leftPwm = basePwm - (int)straightEncoderCorrection;
-  int rightPwm = basePwm + (int)straightEncoderCorrection;
-
-  leftPwm = constrain(leftPwm, MIN_MOVING_PWM, 255);
-  rightPwm = constrain(rightPwm, MIN_MOVING_PWM, 255);
-
-  setDrive(leftPwm, rightPwm);
-}
-
 const char* encoderTestActionName(EncoderTestAction action) {
   switch (action) {
     case ENC_TEST_RIGHT_90:  return "DERECHA 90";
@@ -585,8 +502,8 @@ void updateAllSensors() {
   updateOneSensor(PIN_IR_SIDE_LEFT,   sLL);
   updateOneSensor(PIN_IR_SIDE_RIGHT,  sLR);
 
-  // Frente robusto inspirado en la validacion por multiples sensores:
-  // una lectura alta aislada NO alcanza para declarar pared.
+  // Una lectura frontal aislada no alcanza para frenar:
+  // un sensor supera STOP y el otro debe acompañar.
   uint16_t frontHigh = max(sFL.filtered, sFR.filtered);
   uint16_t frontLow  = min(sFL.filtered, sFR.filtered);
 
@@ -600,35 +517,11 @@ void updateAllSensors() {
     frontWallStableCount = 0;
   }
 
-  // 3 muestras consecutivas (~30 ms con loop de control a 100 Hz).
+  // 3 lecturas consecutivas (~30 ms a 100 Hz).
   frontBlocked = frontWallStableCount >= 3;
 
   rightOpen = sLR.filtered < cfg.rightOpenAdc;
   leftOpen  = sLL.filtered < cfg.leftOpenAdc;
-
-  // Histeresis para el control lateral:
-  // adquirir pared a un nivel alto, perderla a un nivel mas bajo.
-  if (rightWallControlActive) {
-    if (sLR.filtered < cfg.rightOpenAdc) {
-      rightWallControlActive = false;
-
-      readPhysicalEncoders(lastWallBreakLeft, lastWallBreakRight);
-      rightWallBreakCount++;
-
-      captureStraightReference();
-    }
-  } else {
-    if (sLR.filtered >= cfg.rightWallAcquireAdc) {
-      rightWallControlActive = true;
-      straightEncoderCorrection = 0.0f;
-    }
-  }
-
-  if (rightOpen) {
-    if (rightOpenStableCount < 10) rightOpenStableCount++;
-  } else {
-    rightOpenStableCount = 0;
-  }
 }
 
 // Valor frontal conservado para telemetria/aproximacion.
@@ -721,18 +614,14 @@ int calculateApproachPwm() {
 
 const char* stateName(RobotState s) {
   switch (s) {
-    case STATE_FOLLOW:      return "SIGUIENDO PARED";
+    case STATE_FOLLOW:        return "PID PARED DERECHA";
     case STATE_BRAKE:         return "FRENANDO / DECIDIENDO";
-    case STATE_DECISION_WAIT: return "SALIDA ELEGIDA / ESPERANDO";
-    case STATE_PRE_RIGHT:     return "CENTRANDO PARA DERECHA";
-    case STATE_TURN_RIGHT:  return "GIRO DERECHA";
-    case STATE_TURN_LEFT:   return "GIRO IZQUIERDA";
-    case STATE_UTURN:             return "GIRO 180";
-    case STATE_FIND_RIGHT_WALL:    return "BUSCANDO PARED DERECHA";
-    case STATE_SETTLE:             return "ESTABILIZANDO";
-    case STATE_SEARCH_FAIL:  return "PARED DERECHA NO ENCONTRADA";
+    case STATE_DECISION_WAIT: return "ESPERANDO PARA GIRAR";
+    case STATE_TURN_RIGHT:    return "GIRO DERECHA";
+    case STATE_TURN_LEFT:     return "GIRO IZQUIERDA";
+    case STATE_UTURN:         return "GIRO 180";
     case STATE_STOPPED:
-    default:                return "DETENIDO";
+    default:                  return "DETENIDO";
   }
 }
 
@@ -761,8 +650,7 @@ void runMaze() {
       break;
 
     case STATE_FOLLOW: {
-      // UNICA condicion que provoca un giro:
-      // pared frontal confirmada por ambos sensores durante varias muestras.
+      // Solo una pared frontal confirmada interrumpe el PID.
       if (frontBlocked) {
         stopMotors();
         enterState(STATE_BRAKE);
@@ -772,30 +660,21 @@ void runMaze() {
       int mazePwm = max(cfg.basePwm, cfg.approachMinPwm);
       mazePwm = constrain(mazePwm, MIN_MOVING_PWM, 255);
 
-      if (rightWallControlActive) {
-        // Pared valida: correccion lateral por IR.
-        straightEncoderCorrection = 0.0f;
-        followRightWallAtPwm(mazePwm);
-      } else {
-        // Sin pared: sigue avanzando, pero ya no a PWM abierto.
-        // Los encoders mantienen ambas ruedas recorriendo la misma distancia.
-        resetPid();
-        driveStraightWithEncoders(mazePwm);
-      }
-
+      // SIEMPRE busca/segue la pared derecha con el mismo PID.
+      // Si la pared se aleja o desaparece, el error hace que el robot
+      // tienda hacia la derecha hasta volver a encontrarla.
+      followRightWallAtPwm(mazePwm);
       break;
     }
 
     case STATE_BRAKE:
       stopMotors();
 
-      // Deja que el robot quede completamente quieto.
       if (now - stateStartMs < BRAKE_SETTLE_MS) {
         break;
       }
 
-      // Solo frente a una pared decide hacia donde salir.
-      // Prioridad mano derecha.
+      // Regla de mano derecha al llegar a una pared frontal.
       if (rightOpen) {
         pendingTurnState = STATE_TURN_RIGHT;
       } else if (leftOpen) {
@@ -810,7 +689,6 @@ void runMaze() {
     case STATE_DECISION_WAIT:
       stopMotors();
 
-      // Espera detenida antes de ejecutar el giro elegido.
       if (now - stateStartMs < (uint32_t)cfg.decisionWaitMs) {
         break;
       }
@@ -835,7 +713,6 @@ void runMaze() {
         stopMotors();
         pendingTurnState = STATE_STOPPED;
         resetPid();
-        captureStraightReference();
         enterState(STATE_FOLLOW);
         break;
       }
@@ -856,7 +733,6 @@ void runMaze() {
         stopMotors();
         pendingTurnState = STATE_STOPPED;
         resetPid();
-        captureStraightReference();
         enterState(STATE_FOLLOW);
         break;
       }
@@ -877,7 +753,6 @@ void runMaze() {
         stopMotors();
         pendingTurnState = STATE_STOPPED;
         resetPid();
-        captureStraightReference();
         enterState(STATE_FOLLOW);
         break;
       }
@@ -890,18 +765,6 @@ void runMaze() {
       setDrive(+pwm, -pwm);
       break;
     }
-
-    // Estados legacy: ya no participan en la logica simplificada.
-    case STATE_PRE_RIGHT:
-    case STATE_FIND_RIGHT_WALL:
-    case STATE_SETTLE:
-      enterState(STATE_FOLLOW);
-      break;
-
-    case STATE_SEARCH_FAIL:
-      stopMotors();
-      running = false;
-      break;
   }
 }
 
@@ -6760,7 +6623,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre avanza hacia adelante. Con pared derecha válida usa PID; al perderla registra un wall-break y mantiene la recta con encoders. La pared frontal se confirma con ambos sensores antes de ordenar un giro.
+          El robot usa siempre el PID del lateral derecho. Si la pared se aleja, el PID lo hace buscar hacia la derecha. Solo interrumpe el seguimiento cuando confirma una pared frontal.
         </div>
       </div>
 
@@ -6772,9 +6635,6 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>PWM minimo aproximacion</span><input class="cfg" id="approachMinPwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
-        <div class="field"><span>Detectar pared derecha ADC</span><input class="cfg" id="rightWallAcquireAdc" type="number" step="1"></div>
-        <div class="field"><span>Kp recta por encoders</span><input class="cfg" id="straightEncoderKp" type="number" min="0" max="20" step="0.1"></div>
-        <div class="field"><span>Correccion max recta</span><input class="cfg" id="straightEncoderMaxCorrection" type="number" min="0" max="100" step="1"></div>
       </div>
 
       <div class="card">
@@ -6784,7 +6644,6 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>Referencia 90° ticks</span><input class="cfg" id="turn90Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Referencia 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="3000" step="10"></div>
-        <div class="field"><span>Estabilizacion post-giro ms</span><input class="cfg" id="settleMs" type="number" min="0" step="10"></div>
         <div class="hint">Los ticks fijan el final del giro. Después vuelve inmediatamente al avance: con pared derecha usa PID; sin pared derecha sigue recto hasta encontrarla.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
@@ -6800,10 +6659,6 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
           <div class="metric"><div class="label">Motor derecho</div><div class="value" id="mMotorR">0</div></div>
           <div class="metric"><div class="label">Encoder izquierdo</div><div class="value" id="mEncL">0</div></div>
           <div class="metric"><div class="label">Encoder derecho</div><div class="value" id="mEncR">0</div></div>
-          <div class="metric"><div class="label">Control lateral</div><div class="value" id="mWallControl">NO</div></div>
-          <div class="metric"><div class="label">Correccion encoder</div><div class="value" id="mStraightCorr">0</div></div>
-          <div class="metric"><div class="label">Wall breaks derecha</div><div class="value" id="mWallBreaks">0</div></div>
-          <div class="metric"><div class="label">Ticks desde wall break</div><div class="value" id="mSinceBreak">0</div></div>
           <div class="metric"><div class="label">Error PID</div><div class="value" id="mError">0</div></div>
           <div class="metric"><div class="label">Correccion PID</div><div class="value" id="mCorrection">0</div></div>
         </div>
@@ -6993,11 +6848,9 @@ async function applyConfig(){
   const ids=[
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontSlowAdc','frontWallAdc','frontConfirmAdc','approachMinPwm',
-    'rightOpenAdc','leftOpenAdc','rightWallAcquireAdc',
-    'straightEncoderKp','straightEncoderMaxCorrection',
-    'turnPwm','turnSlowPwm',
+    'rightOpenAdc','leftOpenAdc','turnPwm','turnSlowPwm',
     'turn90Ticks','turn180Ticks',
-    'decisionWaitMs','settleMs'
+    'decisionWaitMs'
   ];
 
   const p=new URLSearchParams();
@@ -7063,10 +6916,6 @@ async function updateStatus(){
     document.getElementById('mMotorR').textContent=d.motor.right;
     document.getElementById('mEncL').textContent=d.enc.left;
     document.getElementById('mEncR').textContent=d.enc.right;
-    document.getElementById('mWallControl').textContent=d.navigation.rightWallControl?'PID':'RECTA';
-    document.getElementById('mStraightCorr').textContent=d.navigation.straightCorrection.toFixed(1);
-    document.getElementById('mWallBreaks').textContent=d.navigation.rightWallBreaks;
-    document.getElementById('mSinceBreak').textContent=d.navigation.ticksSinceWallBreak;
     document.getElementById('mError').textContent=d.pid.error.toFixed(1);
     document.getElementById('mCorrection').textContent=d.pid.correction.toFixed(1);
 
@@ -7187,13 +7036,6 @@ void handleStatus() {
   json += "\"rb\":" + String(digitalRead(PIN_ENC_L_B));
   json += "},";
 
-  json += "\"navigation\":{";
-  json += "\"rightWallControl\":" + String(rightWallControlActive ? "true" : "false") + ",";
-  json += "\"straightCorrection\":" + String(straightEncoderCorrection, 2) + ",";
-  json += "\"rightWallBreaks\":" + String(rightWallBreakCount) + ",";
-  json += "\"ticksSinceWallBreak\":" + String(getTicksSinceWallBreak());
-  json += "},";
-
   json += "\"encoderTest\":{";
   json += "\"active\":" + String(encoderTestActive ? "true" : "false") + ",";
   json += "\"completed\":" + String(encoderTestCompleted ? "true" : "false") + ",";
@@ -7221,20 +7063,11 @@ void handleStatus() {
   json += "\"approachMinPwm\":" + String(cfg.approachMinPwm) + ",";
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
-  json += "\"rightWallAcquireAdc\":" + String(cfg.rightWallAcquireAdc) + ",";
-  json += "\"straightEncoderKp\":" + String(cfg.straightEncoderKp, 3) + ",";
-  json += "\"straightEncoderMaxCorrection\":" + String(cfg.straightEncoderMaxCorrection) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
   json += "\"turnSlowPwm\":" + String(cfg.turnSlowPwm) + ",";
   json += "\"turn90Ticks\":" + String(cfg.turn90Ticks) + ",";
   json += "\"turn180Ticks\":" + String(cfg.turn180Ticks) + ",";
-  json += "\"rightAdvanceMs\":" + String(cfg.rightAdvanceMs) + ",";
   json += "\"decisionWaitMs\":" + String(cfg.decisionWaitMs) + ",";
-  json += "\"rightTurnMs\":" + String(cfg.rightTurnMs) + ",";
-  json += "\"leftTurnMs\":" + String(cfg.leftTurnMs) + ",";
-  json += "\"uTurnMs\":" + String(cfg.uTurnMs) + ",";
-  json += "\"settleMs\":" + String(cfg.settleMs) + ",";
-  json += "\"junctionCooldownMs\":" + String(cfg.junctionCooldownMs) + ",";
   json += "\"manualPwm\":" + String(cfg.manualPwm);
   json += "}";
 
@@ -7255,16 +7088,11 @@ void handleMode() {
   running = false;
   robotState = STATE_STOPPED;
   pendingTurnState = STATE_STOPPED;
-  mazeRightOpeningEvent = false;
-  rightOpenStableCount = 0;
-  turnWallStableCount = 0;
   encoderTestActive = false;
   encoderTestCompleted = false;
   stopMotors();
   resetPid();
   frontWallStableCount = 0;
-  rightWallControlActive = false;
-  captureStraightReference();
 
   if (mode == "TEST") {
     activeMode = MODE_TEST;
@@ -7308,8 +7136,6 @@ void handleRun() {
 
     if (activeMode == MODE_MAZE) {
       frontWallStableCount = 0;
-      rightWallControlActive = false;
-      captureStraightReference();
       enterState(STATE_FOLLOW);
     } else {
       robotState = STATE_FOLLOW;
@@ -7462,16 +7288,6 @@ void handleConfig() {
   if (server.hasArg("leftOpenAdc"))
     cfg.leftOpenAdc = constrain(server.arg("leftOpenAdc").toInt(), 0, 4095);
 
-  if (server.hasArg("rightWallAcquireAdc"))
-    cfg.rightWallAcquireAdc = constrain(server.arg("rightWallAcquireAdc").toInt(), 0, 4095);
-
-  if (server.hasArg("straightEncoderKp"))
-    cfg.straightEncoderKp = constrain(server.arg("straightEncoderKp").toFloat(), 0.0f, 20.0f);
-
-  if (server.hasArg("straightEncoderMaxCorrection"))
-    cfg.straightEncoderMaxCorrection =
-      constrain(server.arg("straightEncoderMaxCorrection").toInt(), 0, 100);
-
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), MIN_MOVING_PWM, 255);
 
@@ -7484,26 +7300,8 @@ void handleConfig() {
   if (server.hasArg("turn180Ticks"))
     cfg.turn180Ticks = constrain(server.arg("turn180Ticks").toInt(), 1, 10000);
 
-  if (server.hasArg("rightAdvanceMs"))
-    cfg.rightAdvanceMs = constrain(server.arg("rightAdvanceMs").toInt(), 0, 2000);
-
   if (server.hasArg("decisionWaitMs"))
     cfg.decisionWaitMs = constrain(server.arg("decisionWaitMs").toInt(), 0, 3000);
-
-  if (server.hasArg("rightTurnMs"))
-    cfg.rightTurnMs = constrain(server.arg("rightTurnMs").toInt(), 0, 3000);
-
-  if (server.hasArg("leftTurnMs"))
-    cfg.leftTurnMs = constrain(server.arg("leftTurnMs").toInt(), 0, 3000);
-
-  if (server.hasArg("uTurnMs"))
-    cfg.uTurnMs = constrain(server.arg("uTurnMs").toInt(), 0, 5000);
-
-  if (server.hasArg("settleMs"))
-    cfg.settleMs = constrain(server.arg("settleMs").toInt(), 0, 2000);
-
-  if (server.hasArg("junctionCooldownMs"))
-    cfg.junctionCooldownMs = constrain(server.arg("junctionCooldownMs").toInt(), 0, 3000);
 
   if (server.hasArg("manualPwm"))
     cfg.manualPwm = constrain(server.arg("manualPwm").toInt(), 0, 255);
