@@ -192,9 +192,9 @@ const uint16_t BRAKE_SETTLE_MS = 80;
 
 // El angulo del giro NO depende de estos tiempos.
 // Son solo protecciones para evitar terminar demasiado pronto o girar infinito.
-const uint16_t TURN_PID_MIN_MS = 180;
-const uint16_t UTURN_PID_MIN_MS = 350;
-const uint16_t TURN_PID_TIMEOUT_MS = 1600;
+const uint16_t TURN_PID_MIN_MS = 280;
+const uint16_t UTURN_PID_MIN_MS = 500;
+const uint16_t TURN_PID_TIMEOUT_MS = 1800;
 const int TURN_WALL_LOCK_TOLERANCE_ADC = 300;
 const uint8_t TURN_LOCK_SAMPLES = 3;
 
@@ -7137,6 +7137,7 @@ void handleMode() {
   stopMotors();
   resetPid();
   frontWallStableCount = 0;
+  turnLockCount = 0;
 
   if (mode == "TEST") {
     activeMode = MODE_TEST;
@@ -7373,6 +7374,7 @@ void handleStop() {
   encoderTestCompleted = false;
   stopMotors();
   resetPid();
+  turnLockCount = 0;
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "STOP");
 }
