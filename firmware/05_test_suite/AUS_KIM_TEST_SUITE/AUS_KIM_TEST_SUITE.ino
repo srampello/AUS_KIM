@@ -124,7 +124,8 @@ enum RobotState : uint8_t {
   STATE_DECISION_WAIT,
   STATE_TURN_RIGHT,
   STATE_TURN_LEFT,
-  STATE_UTURN
+  STATE_UTURN,
+  STATE_CENTER_AFTER_UTURN
 };
 
 struct SensorData {
@@ -189,6 +190,14 @@ const int MIN_MOVING_PWM = 155;
 // Pausa mecanica tras frenar frente a una pared.
 const uint16_t BRAKE_SETTLE_MS = 80;
 
+// Centrado posterior a un callejon sin salida.
+// Se considera centrado cuando ambos laterales difieren <= 80 ADC
+// durante 4 ciclos consecutivos. Como seguridad, solo intenta
+// corregir durante ~100 ticks promedio de avance (~4.8 cm).
+const int CENTER_TOLERANCE_ADC = 80;
+const uint8_t CENTER_STABLE_SAMPLES = 4;
+const uint32_t CENTER_MAX_TICKS = 100;
+
 // ============================================================
 // 4. ESTADO GLOBAL
 // ============================================================
@@ -211,6 +220,10 @@ bool leftOpen = false;
 
 // Pared frontal confirmada durante varias muestras.
 uint8_t frontWallStableCount = 0;
+
+// Centrado despues de un giro de 180°.
+uint8_t centerStableCount = 0;
+int centerSideErrorAdc = 0;
 
 float errorPid = 0.0f;
 float prevErrorPid = 0.0f;
@@ -515,6 +528,8 @@ void updateAllSensors() {
     if (frontWallStableCount < 10) frontWallStableCount++;
   } else {
     frontWallStableCount = 0;
+  centerStableCount = 0;
+  centerSideErrorAdc = 0;
   }
 
   // 3 lecturas consecutivas (~30 ms a 100 Hz).
@@ -619,7 +634,8 @@ const char* stateName(RobotState s) {
     case STATE_DECISION_WAIT: return "ESPERANDO PARA GIRAR";
     case STATE_TURN_RIGHT:    return "GIRO DERECHA";
     case STATE_TURN_LEFT:     return "GIRO IZQUIERDA";
-    case STATE_UTURN:         return "GIRO 180";
+    case STATE_UTURN:              return "GIRO 180";
+    case STATE_CENTER_AFTER_UTURN: return "CENTRANDO ENTRE PAREDES";
     case STATE_STOPPED:
     default:                  return "DETENIDO";
   }
@@ -753,7 +769,12 @@ void runMaze() {
         stopMotors();
         pendingTurnState = STATE_STOPPED;
         resetPid();
-        enterState(STATE_FOLLOW);
+
+        // Nueva referencia para medir solamente el avance de centrado.
+        captureMoveStart();
+        centerStableCount = 0;
+        centerSideErrorAdc = 0;
+        enterState(STATE_CENTER_AFTER_UTURN);
         break;
       }
 
@@ -763,6 +784,62 @@ void runMaze() {
         : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
 
       setDrive(+pwm, -pwm);
+      break;
+    }
+
+    case STATE_CENTER_AFTER_UTURN: {
+      // Si por alguna razon aparece otra pared frontal, no avanzar contra ella.
+      if (frontBlocked) {
+        stopMotors();
+        centerStableCount = 0;
+        enterState(STATE_BRAKE);
+        break;
+      }
+
+      // Solo tiene sentido centrar si realmente seguimos entre dos paredes.
+      bool leftWallPresent  = !leftOpen;
+      bool rightWallPresent = !rightOpen;
+
+      centerSideErrorAdc = (int)sLR.filtered - (int)sLL.filtered;
+
+      if (
+        leftWallPresent &&
+        rightWallPresent &&
+        abs(centerSideErrorAdc) <= CENTER_TOLERANCE_ADC
+      ) {
+        if (centerStableCount < CENTER_STABLE_SAMPLES) centerStableCount++;
+      } else {
+        centerStableCount = 0;
+      }
+
+      // Ya esta aproximadamente equidistante de ambas paredes.
+      if (centerStableCount >= CENTER_STABLE_SAMPLES) {
+        centerStableCount = 0;
+        resetPid();
+        enterState(STATE_FOLLOW);
+        break;
+      }
+
+      // Seguridad: no intentar centrar indefinidamente.
+      if (getMoveTicksAverage() >= CENTER_MAX_TICKS) {
+        centerStableCount = 0;
+        resetPid();
+        enterState(STATE_FOLLOW);
+        break;
+      }
+
+      int base = max(cfg.basePwm, cfg.approachMinPwm);
+      base = constrain(base, MIN_MOVING_PWM, 255);
+
+      // error > 0: esta mas cerca de la pared derecha -> gira suavemente a izquierda.
+      // error < 0: esta mas cerca de la pared izquierda -> gira suavemente a derecha.
+      int correction = (int)(cfg.kp * (float)centerSideErrorAdc);
+      correction = constrain(correction, -cfg.maxCorrection, cfg.maxCorrection);
+
+      int leftPwm  = constrain(base - correction, MIN_MOVING_PWM, 255);
+      int rightPwm = constrain(base + correction, MIN_MOVING_PWM, 255);
+
+      setDrive(leftPwm, rightPwm);
       break;
     }
   }
@@ -6644,7 +6721,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>Referencia 90° ticks</span><input class="cfg" id="turn90Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Referencia 180° ticks</span><input class="cfg" id="turn180Ticks" type="number" min="1" step="1"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="3000" step="10"></div>
-        <div class="hint">Los ticks fijan el final del giro. Después vuelve inmediatamente al avance: con pared derecha usa PID; sin pared derecha sigue recto hasta encontrarla.</div>
+        <div class="hint">Los ticks fijan el final del giro. Tras un giro de 180°, si hay pared a ambos lados, avanza corrigiendo hasta que los laterales queden casi iguales y luego vuelve al PID derecho.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6661,6 +6738,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
           <div class="metric"><div class="label">Encoder derecho</div><div class="value" id="mEncR">0</div></div>
           <div class="metric"><div class="label">Error PID</div><div class="value" id="mError">0</div></div>
           <div class="metric"><div class="label">Correccion PID</div><div class="value" id="mCorrection">0</div></div>
+          <div class="metric"><div class="label">Error centro R-L</div><div class="value" id="mCenterError">0</div></div>
         </div>
       </div>
 
@@ -6918,6 +6996,7 @@ async function updateStatus(){
     document.getElementById('mEncR').textContent=d.enc.right;
     document.getElementById('mError').textContent=d.pid.error.toFixed(1);
     document.getElementById('mCorrection').textContent=d.pid.correction.toFixed(1);
+    document.getElementById('mCenterError').textContent=d.center.error;
 
     // CALIBRACION ENCODERS
     document.getElementById('calState').textContent=
@@ -7027,6 +7106,10 @@ void handleStatus() {
   json += "\"right\":" + String(motorRightCmd);
   json += "},";
 
+  json += "\"center\":{";
+  json += "\"error\":" + String(centerSideErrorAdc);
+  json += "},";
+
   json += "\"enc\":{";
   json += "\"left\":" + String(encPhysicalLeft) + ",";
   json += "\"right\":" + String(encPhysicalRight) + ",";
@@ -7093,6 +7176,8 @@ void handleMode() {
   stopMotors();
   resetPid();
   frontWallStableCount = 0;
+  centerStableCount = 0;
+  centerSideErrorAdc = 0;
 
   if (mode == "TEST") {
     activeMode = MODE_TEST;
@@ -7136,6 +7221,8 @@ void handleRun() {
 
     if (activeMode == MODE_MAZE) {
       frontWallStableCount = 0;
+  centerStableCount = 0;
+  centerSideErrorAdc = 0;
       enterState(STATE_FOLLOW);
     } else {
       robotState = STATE_FOLLOW;
