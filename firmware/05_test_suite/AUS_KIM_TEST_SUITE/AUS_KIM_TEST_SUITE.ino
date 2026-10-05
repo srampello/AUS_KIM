@@ -124,8 +124,7 @@ enum RobotState : uint8_t {
   STATE_DECISION_WAIT,
   STATE_TURN_RIGHT,
   STATE_TURN_LEFT,
-  STATE_UTURN,
-  STATE_CENTER_AFTER_UTURN
+  STATE_UTURN
 };
 
 struct SensorData {
@@ -158,12 +157,8 @@ struct ControlConfig {
   int leftOpenAdc = 1750;
   int approachMinPwm = 165;
 
-  // Giros del Maze por TIEMPO. Los encoders quedan solo para pruebas.
+  // El Maze gira por PID + sensores. Los encoders quedan solo para pruebas.
   int turnPwm = 165;
-  int turnSlowPwm = 120;
-  int rightTurnMs = 310;
-  int leftTurnMs = 310;
-  int uTurnMs = 620;
 
   // Valores de encoder conservados solo para la pestaña de calibracion.
   int turn90Ticks = 160;
@@ -171,9 +166,6 @@ struct ControlConfig {
 
   // Pausa detenido luego de decidir y antes de comenzar el giro.
   int decisionWaitMs = 200;
-
-  // Tiempo maximo intentando centrarse tras un giro de 180°.
-  int centerMaxMs = 700;
 
   // Prueba manual
   int manualPwm = 80;
@@ -198,11 +190,13 @@ const int MIN_MOVING_PWM = 155;
 // Pausa mecanica tras frenar frente a una pared.
 const uint16_t BRAKE_SETTLE_MS = 80;
 
-// Centrado posterior a un callejon sin salida.
-// Se considera centrado cuando ambos laterales difieren <= 80 ADC
-// durante 4 ciclos consecutivos. No usa encoders.
-const int CENTER_TOLERANCE_ADC = 80;
-const uint8_t CENTER_STABLE_SAMPLES = 4;
+// El angulo del giro NO depende de estos tiempos.
+// Son solo protecciones para evitar terminar demasiado pronto o girar infinito.
+const uint16_t TURN_PID_MIN_MS = 180;
+const uint16_t UTURN_PID_MIN_MS = 350;
+const uint16_t TURN_PID_TIMEOUT_MS = 1600;
+const int TURN_WALL_LOCK_TOLERANCE_ADC = 300;
+const uint8_t TURN_LOCK_SAMPLES = 3;
 
 // ============================================================
 // 4. ESTADO GLOBAL
@@ -227,9 +221,8 @@ bool leftOpen = false;
 // Pared frontal confirmada durante varias muestras.
 uint8_t frontWallStableCount = 0;
 
-// Centrado despues de un giro de 180°.
-uint8_t centerStableCount = 0;
-int centerSideErrorAdc = 0;
+// Confirmacion de que el giro ya encontro nuevamente la pared derecha.
+uint8_t turnLockCount = 0;
 
 float errorPid = 0.0f;
 float prevErrorPid = 0.0f;
@@ -560,8 +553,13 @@ void resetPid() {
   correctionPid = 0.0f;
 }
 
-void followRightWallAtPwm(int basePwm) {
-  errorPid = (float)sLR.filtered - (float)cfg.targetRightAdc;
+void driveRightWallPid(
+  int basePwm,
+  int targetAdc,
+  int maxCorrection,
+  int minWheelPwm
+) {
+  errorPid = (float)sLR.filtered - (float)targetAdc;
 
   integralPid += errorPid;
   integralPid = constrain(integralPid, -4000.0f, 4000.0f);
@@ -575,25 +573,32 @@ void followRightWallAtPwm(int basePwm) {
 
   correctionPid = constrain(
     correctionPid,
-    -(float)cfg.maxCorrection,
-    (float)cfg.maxCorrection
+    -(float)maxCorrection,
+    (float)maxCorrection
   );
 
-  // En seguimiento de pared ambas ruedas siempre permanecen hacia adelante.
-  // Como AUS_KIM no se mueve de forma confiable por debajo de 155 PWM,
-  // el PID corrige acelerando una rueda pero nunca frenando la otra
-  // por debajo del umbral mecanico.
-  basePwm = constrain(basePwm, MIN_MOVING_PWM, 255);
+  basePwm = constrain(basePwm, 0, 255);
 
   int leftPwm  = basePwm - (int)correctionPid;
   int rightPwm = basePwm + (int)correctionPid;
 
-  leftPwm  = constrain(leftPwm, MIN_MOVING_PWM, 255);
-  rightPwm = constrain(rightPwm, MIN_MOVING_PWM, 255);
+  leftPwm  = constrain(leftPwm, minWheelPwm, 255);
+  rightPwm = constrain(rightPwm, minWheelPwm, 255);
 
   setDrive(leftPwm, rightPwm);
-
   prevErrorPid = errorPid;
+}
+
+void followRightWallAtPwm(int basePwm) {
+  // Seguimiento normal: ambas ruedas siempre hacia adelante y nunca
+  // por debajo del minimo mecanico medido.
+  basePwm = constrain(basePwm, MIN_MOVING_PWM, 255);
+  driveRightWallPid(
+    basePwm,
+    cfg.targetRightAdc,
+    cfg.maxCorrection,
+    MIN_MOVING_PWM
+  );
 }
 
 void followRightWall() {
@@ -611,8 +616,6 @@ int calculateApproachPwm() {
     return 0;
   }
 
-  // El robot no puede desacelerar por debajo de 155 sin detenerse.
-  // Si basePwm tambien es 155, mantendra 155 hasta el umbral de STOP.
   int base = constrain(cfg.basePwm, MIN_MOVING_PWM, 255);
   int minPwm = constrain(cfg.approachMinPwm, MIN_MOVING_PWM, base);
 
@@ -627,6 +630,46 @@ int calculateApproachPwm() {
   return constrain((int)pwm, minPwm, base);
 }
 
+bool turnFrontClear() {
+  return
+    sFL.filtered < cfg.frontSlowAdc &&
+    sFR.filtered < cfg.frontSlowAdc;
+}
+
+bool turnRightWallReady() {
+  return sLR.filtered >= cfg.rightOpenAdc;
+}
+
+bool turnRightWallLocked() {
+  int error = abs((int)sLR.filtered - cfg.targetRightAdc);
+  return error <= TURN_WALL_LOCK_TOLERANCE_ADC;
+}
+
+void driveForcedPidTurn(bool turnRight) {
+  // Se usa el MISMO PID del lateral derecho, pero con un objetivo extremo:
+  // target alto -> error negativo -> giro fuerte a derecha.
+  // target bajo -> error positivo -> giro fuerte a izquierda.
+  int forcedTarget = turnRight ? 4095 : 0;
+
+  driveRightWallPid(
+    cfg.turnPwm,
+    forcedTarget,
+    cfg.turnPwm,
+    0
+  );
+}
+
+void driveTurnAlignmentPid() {
+  // Fase final del giro: vuelve al objetivo real de pared derecha.
+  // Se permite que la rueda interior baje hasta 0 para poder cerrar el giro.
+  driveRightWallPid(
+    cfg.turnPwm,
+    cfg.targetRightAdc,
+    cfg.turnPwm,
+    0
+  );
+}
+
 // ============================================================
 // 9. MAZE
 // ============================================================
@@ -636,10 +679,9 @@ const char* stateName(RobotState s) {
     case STATE_FOLLOW:        return "PID PARED DERECHA";
     case STATE_BRAKE:         return "FRENANDO / DECIDIENDO";
     case STATE_DECISION_WAIT: return "ESPERANDO PARA GIRAR";
-    case STATE_TURN_RIGHT:    return "GIRO DERECHA";
-    case STATE_TURN_LEFT:     return "GIRO IZQUIERDA";
-    case STATE_UTURN:              return "GIRO 180";
-    case STATE_CENTER_AFTER_UTURN: return "CENTRANDO ENTRE PAREDES";
+    case STATE_TURN_RIGHT:    return "GIRO PID DERECHA";
+    case STATE_TURN_LEFT:     return "GIRO PID IZQUIERDA";
+    case STATE_UTURN:         return "GIRO PID 180";
     case STATE_STOPPED:
     default:                  return "DETENIDO";
   }
@@ -664,13 +706,57 @@ void enterState(RobotState newState) {
 void runMaze() {
   uint32_t now = millis();
 
+  auto runPidTurn = [&](bool turnRight, bool uTurn) {
+    uint32_t elapsed = now - stateStartMs;
+    uint32_t minMs = uTurn ? UTURN_PID_MIN_MS : TURN_PID_MIN_MS;
+
+    // Seguridad: si por sensores no logra resolver el giro, se detiene.
+    if (elapsed >= TURN_PID_TIMEOUT_MS) {
+      stopMotors();
+      running = false;
+      robotState = STATE_STOPPED;
+      turnLockCount = 0;
+      resetPid();
+      return;
+    }
+
+    bool canFinish =
+      elapsed >= minMs &&
+      turnFrontClear() &&
+      turnRightWallReady();
+
+    if (!canFinish) {
+      turnLockCount = 0;
+      driveForcedPidTurn(turnRight);
+      return;
+    }
+
+    // Cuando ya ve el nuevo pasillo, deja de forzar el sentido y usa
+    // el objetivo REAL del PID derecho para alinearse con la nueva pared.
+    driveTurnAlignmentPid();
+
+    if (turnRightWallLocked()) {
+      if (turnLockCount < TURN_LOCK_SAMPLES) turnLockCount++;
+    } else {
+      turnLockCount = 0;
+    }
+
+    if (turnLockCount >= TURN_LOCK_SAMPLES) {
+      stopMotors();
+      turnLockCount = 0;
+      pendingTurnState = STATE_STOPPED;
+      resetPid();
+      enterState(STATE_FOLLOW);
+    }
+  };
+
   switch (robotState) {
     case STATE_STOPPED:
       enterState(STATE_FOLLOW);
       break;
 
     case STATE_FOLLOW: {
-      // Solo una pared frontal confirmada interrumpe el PID.
+      // En avance normal SIEMPRE sigue/busca la pared derecha con PID.
       if (frontBlocked) {
         stopMotors();
         enterState(STATE_BRAKE);
@@ -679,10 +765,6 @@ void runMaze() {
 
       int mazePwm = max(cfg.basePwm, cfg.approachMinPwm);
       mazePwm = constrain(mazePwm, MIN_MOVING_PWM, 255);
-
-      // SIEMPRE busca/segue la pared derecha con el mismo PID.
-      // Si la pared se aleja o desaparece, el error hace que el robot
-      // tienda hacia la derecha hasta volver a encontrarla.
       followRightWallAtPwm(mazePwm);
       break;
     }
@@ -694,7 +776,10 @@ void runMaze() {
         break;
       }
 
-      // Regla de mano derecha al llegar a una pared frontal.
+      // Regla pedida:
+      // - si NO hay pared derecha -> gira a derecha
+      // - si HAY pared derecha -> gira a izquierda
+      // Seguridad de callejon: si izquierda y derecha estan cerradas -> 180.
       if (rightOpen) {
         pendingTurnState = STATE_TURN_RIGHT;
       } else if (leftOpen) {
@@ -713,6 +798,9 @@ void runMaze() {
         break;
       }
 
+      resetPid();
+      turnLockCount = 0;
+
       if (
         pendingTurnState == STATE_TURN_RIGHT ||
         pendingTurnState == STATE_TURN_LEFT ||
@@ -724,123 +812,19 @@ void runMaze() {
       }
       break;
 
-    case STATE_TURN_RIGHT: {
-      uint32_t elapsed = now - stateStartMs;
-
-      if (elapsed >= (uint32_t)cfg.rightTurnMs) {
-        stopMotors();
-        pendingTurnState = STATE_STOPPED;
-        resetPid();
-        enterState(STATE_FOLLOW);
-        break;
-      }
-
-      uint32_t slowStart = ((uint32_t)cfg.rightTurnMs * 80UL) / 100UL;
-      int pwm = (elapsed >= slowStart)
-        ? constrain(cfg.turnSlowPwm, 0, 255)
-        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
-
-      setDrive(+pwm, -pwm);
+    case STATE_TURN_RIGHT:
+      runPidTurn(true, false);
       break;
-    }
 
-    case STATE_TURN_LEFT: {
-      uint32_t elapsed = now - stateStartMs;
-
-      if (elapsed >= (uint32_t)cfg.leftTurnMs) {
-        stopMotors();
-        pendingTurnState = STATE_STOPPED;
-        resetPid();
-        enterState(STATE_FOLLOW);
-        break;
-      }
-
-      uint32_t slowStart = ((uint32_t)cfg.leftTurnMs * 80UL) / 100UL;
-      int pwm = (elapsed >= slowStart)
-        ? constrain(cfg.turnSlowPwm, 0, 255)
-        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
-
-      setDrive(-pwm, +pwm);
+    case STATE_TURN_LEFT:
+      runPidTurn(false, false);
       break;
-    }
 
-    case STATE_UTURN: {
-      uint32_t elapsed = now - stateStartMs;
-
-      if (elapsed >= (uint32_t)cfg.uTurnMs) {
-        stopMotors();
-        pendingTurnState = STATE_STOPPED;
-        resetPid();
-        centerStableCount = 0;
-        centerSideErrorAdc = 0;
-        enterState(STATE_CENTER_AFTER_UTURN);
-        break;
-      }
-
-      uint32_t slowStart = ((uint32_t)cfg.uTurnMs * 80UL) / 100UL;
-      int pwm = (elapsed >= slowStart)
-        ? constrain(cfg.turnSlowPwm, 0, 255)
-        : constrain(cfg.turnPwm, MIN_MOVING_PWM, 255);
-
-      setDrive(+pwm, -pwm);
+    case STATE_UTURN:
+      // En un callejon sin salida gira a derecha hasta que el frente quede
+      // libre y el lateral derecho vuelva al objetivo del PID.
+      runPidTurn(true, true);
       break;
-    }
-
-    case STATE_CENTER_AFTER_UTURN: {
-      // Si por alguna razon aparece otra pared frontal, no avanzar contra ella.
-      if (frontBlocked) {
-        stopMotors();
-        centerStableCount = 0;
-        enterState(STATE_BRAKE);
-        break;
-      }
-
-      // Solo tiene sentido centrar si realmente seguimos entre dos paredes.
-      bool leftWallPresent  = !leftOpen;
-      bool rightWallPresent = !rightOpen;
-
-      centerSideErrorAdc = (int)sLR.filtered - (int)sLL.filtered;
-
-      if (
-        leftWallPresent &&
-        rightWallPresent &&
-        abs(centerSideErrorAdc) <= CENTER_TOLERANCE_ADC
-      ) {
-        if (centerStableCount < CENTER_STABLE_SAMPLES) centerStableCount++;
-      } else {
-        centerStableCount = 0;
-      }
-
-      // Ya esta aproximadamente equidistante de ambas paredes.
-      if (centerStableCount >= CENTER_STABLE_SAMPLES) {
-        centerStableCount = 0;
-        resetPid();
-        enterState(STATE_FOLLOW);
-        break;
-      }
-
-      // Seguridad: no intentar centrar indefinidamente.
-      if (now - stateStartMs >= (uint32_t)cfg.centerMaxMs) {
-        centerStableCount = 0;
-        resetPid();
-        enterState(STATE_FOLLOW);
-        break;
-      }
-
-      int base = max(cfg.basePwm, cfg.approachMinPwm);
-      base = constrain(base, MIN_MOVING_PWM, 255);
-
-      // error > 0: esta mas cerca de la pared derecha -> gira suavemente a izquierda.
-      // error < 0: esta mas cerca de la pared izquierda -> gira suavemente a derecha.
-      int correction = (int)(cfg.kp * (float)centerSideErrorAdc);
-      correction = constrain(correction, -cfg.maxCorrection, cfg.maxCorrection);
-
-      int leftPwm  = constrain(base - correction, MIN_MOVING_PWM, 255);
-      int rightPwm = constrain(base + correction, MIN_MOVING_PWM, 255);
-
-      setDrive(leftPwm, rightPwm);
-      break;
-    }
   }
 }
 
@@ -6699,7 +6683,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          El robot usa siempre el PID del lateral derecho. Solo interrumpe el seguimiento ante una pared frontal confirmada. Los giros del Maze son por tiempo y no usan encoders.
+          El robot usa siempre el PID del lateral derecho. Ante una pared frontal: derecha libre → gira a derecha; derecha cerrada → gira a izquierda. El giro también se controla por PID y termina al recuperar la nueva pared derecha.
         </div>
       </div>
 
@@ -6714,15 +6698,10 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
       </div>
 
       <div class="card">
-        <h2>Giros por tiempo</h2>
-        <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="155" max="255" step="1"></div>
-        <div class="field"><span>PWM final giro</span><input class="cfg" id="turnSlowPwm" type="number" min="0" max="255" step="1"></div>
-        <div class="field"><span>Giro derecha 90° ms</span><input class="cfg" id="rightTurnMs" type="number" min="50" max="3000" step="10"></div>
-        <div class="field"><span>Giro izquierda 90° ms</span><input class="cfg" id="leftTurnMs" type="number" min="50" max="3000" step="10"></div>
-        <div class="field"><span>Giro 180° ms</span><input class="cfg" id="uTurnMs" type="number" min="100" max="5000" step="10"></div>
+        <h2>Giros por PID</h2>
+        <div class="field"><span>PWM base del giro PID</span><input class="cfg" id="turnPwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="3000" step="10"></div>
-        <div class="field"><span>Máximo centrado tras 180° ms</span><input class="cfg" id="centerMaxMs" type="number" min="100" max="3000" step="50"></div>
-        <div class="hint">El Maze no usa encoders. Los giros terminan por tiempo; después del 180° el centrado usa solo los sensores laterales.</div>
+        <div class="hint">No usa ticks ni un tiempo fijo para completar el ángulo. El PID fuerza el sentido del giro y, cuando el frente queda libre, se alinea otra vez con el objetivo de pared derecha.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6739,7 +6718,6 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
           <div class="metric"><div class="label">Encoder derecho</div><div class="value" id="mEncR">0</div></div>
           <div class="metric"><div class="label">Error PID</div><div class="value" id="mError">0</div></div>
           <div class="metric"><div class="label">Correccion PID</div><div class="value" id="mCorrection">0</div></div>
-          <div class="metric"><div class="label">Error centro R-L</div><div class="value" id="mCenterError">0</div></div>
         </div>
       </div>
 
@@ -6767,16 +6745,14 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <h2>Giro derecha 90°</h2>
         <div class="field"><span>Ticks objetivo (suma)</span><input id="cal90Ticks" type="number" min="1" step="1" value="251"></div>
         <button class="full start" onclick="startEncoderTest('R90')">PROBAR 90° DERECHA</button>
-        <button class="full" onclick="saveEncoderTurn('90')">USAR COMO 90° EN MAZE</button>
-        <div class="hint">Ajusta los ticks hasta que fisicamente quede exactamente a 90°.</div>
+        <div class="hint">Prueba independiente del encoder. El Maze no usa este valor.</div>
       </div>
 
       <div class="card">
         <h2>Giro derecha 180°</h2>
         <div class="field"><span>Ticks objetivo (suma)</span><input id="cal180Ticks" type="number" min="1" step="1" value="501"></div>
         <button class="full start" onclick="startEncoderTest('R180')">PROBAR 180° DERECHA</button>
-        <button class="full" onclick="saveEncoderTurn('180')">USAR COMO 180° EN MAZE</button>
-        <div class="hint">El giro se detiene por encoder, no por tiempo.</div>
+        <div class="hint">Prueba independiente del encoder. El Maze no usa este valor.</div>
       </div>
 
       <div class="card">
@@ -6906,15 +6882,6 @@ async function startEncoderTest(action){
   await updateStatus();
 }
 
-async function saveEncoderTurn(angle){
-  const id=angle==='90' ? 'cal90Ticks' : 'cal180Ticks';
-  const key=angle==='90' ? 'turn90Ticks' : 'turn180Ticks';
-  const p=new URLSearchParams();
-  p.set(key,document.getElementById(id).value);
-  await fetch('/api/config?'+p.toString(),{cache:'no-store'});
-  await updateStatus();
-}
-
 function calculateTicksPerCm(){
   const realCm=parseFloat(document.getElementById('calMeasuredCm').value||'0');
   const avg=parseFloat(document.getElementById('calAvg').textContent||'0');
@@ -6927,9 +6894,8 @@ async function applyConfig(){
   const ids=[
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontSlowAdc','frontWallAdc','frontConfirmAdc','approachMinPwm',
-    'rightOpenAdc','leftOpenAdc','turnPwm','turnSlowPwm',
-    'rightTurnMs','leftTurnMs','uTurnMs',
-    'decisionWaitMs','centerMaxMs'
+    'rightOpenAdc','leftOpenAdc','turnPwm',
+    'decisionWaitMs'
   ];
 
   const p=new URLSearchParams();
@@ -6997,7 +6963,6 @@ async function updateStatus(){
     document.getElementById('mEncR').textContent=d.enc.right;
     document.getElementById('mError').textContent=d.pid.error.toFixed(1);
     document.getElementById('mCorrection').textContent=d.pid.correction.toFixed(1);
-    document.getElementById('mCenterError').textContent=d.center.error;
 
     // CALIBRACION ENCODERS
     document.getElementById('calState').textContent=
@@ -7107,10 +7072,6 @@ void handleStatus() {
   json += "\"right\":" + String(motorRightCmd);
   json += "},";
 
-  json += "\"center\":{";
-  json += "\"error\":" + String(centerSideErrorAdc);
-  json += "},";
-
   json += "\"enc\":{";
   json += "\"left\":" + String(encPhysicalLeft) + ",";
   json += "\"right\":" + String(encPhysicalRight) + ",";
@@ -7148,14 +7109,9 @@ void handleStatus() {
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
-  json += "\"turnSlowPwm\":" + String(cfg.turnSlowPwm) + ",";
-  json += "\"rightTurnMs\":" + String(cfg.rightTurnMs) + ",";
-  json += "\"leftTurnMs\":" + String(cfg.leftTurnMs) + ",";
-  json += "\"uTurnMs\":" + String(cfg.uTurnMs) + ",";
   json += "\"turn90Ticks\":" + String(cfg.turn90Ticks) + ",";
   json += "\"turn180Ticks\":" + String(cfg.turn180Ticks) + ",";
   json += "\"decisionWaitMs\":" + String(cfg.decisionWaitMs) + ",";
-  json += "\"centerMaxMs\":" + String(cfg.centerMaxMs) + ",";
   json += "\"manualPwm\":" + String(cfg.manualPwm);
   json += "}";
 
@@ -7181,8 +7137,6 @@ void handleMode() {
   stopMotors();
   resetPid();
   frontWallStableCount = 0;
-  centerStableCount = 0;
-  centerSideErrorAdc = 0;
 
   if (mode == "TEST") {
     activeMode = MODE_TEST;
@@ -7226,8 +7180,6 @@ void handleRun() {
 
     if (activeMode == MODE_MAZE) {
       frontWallStableCount = 0;
-      centerStableCount = 0;
-      centerSideErrorAdc = 0;
       enterState(STATE_FOLLOW);
     } else {
       robotState = STATE_FOLLOW;
@@ -7383,18 +7335,6 @@ void handleConfig() {
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), MIN_MOVING_PWM, 255);
 
-  if (server.hasArg("turnSlowPwm"))
-    cfg.turnSlowPwm = constrain(server.arg("turnSlowPwm").toInt(), 0, 255);
-
-  if (server.hasArg("rightTurnMs"))
-    cfg.rightTurnMs = constrain(server.arg("rightTurnMs").toInt(), 50, 3000);
-
-  if (server.hasArg("leftTurnMs"))
-    cfg.leftTurnMs = constrain(server.arg("leftTurnMs").toInt(), 50, 3000);
-
-  if (server.hasArg("uTurnMs"))
-    cfg.uTurnMs = constrain(server.arg("uTurnMs").toInt(), 100, 5000);
-
   if (server.hasArg("turn90Ticks"))
     cfg.turn90Ticks = constrain(server.arg("turn90Ticks").toInt(), 1, 5000);
 
@@ -7403,9 +7343,6 @@ void handleConfig() {
 
   if (server.hasArg("decisionWaitMs"))
     cfg.decisionWaitMs = constrain(server.arg("decisionWaitMs").toInt(), 0, 3000);
-
-  if (server.hasArg("centerMaxMs"))
-    cfg.centerMaxMs = constrain(server.arg("centerMaxMs").toInt(), 100, 3000);
 
   if (server.hasArg("manualPwm"))
     cfg.manualPwm = constrain(server.arg("manualPwm").toInt(), 0, 255);
