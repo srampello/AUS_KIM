@@ -152,6 +152,11 @@ struct ControlConfig {
   // frontWallAdc: STOP completo y decision.
   int frontSlowAdc = 1900;
   int frontWallAdc = 2000;
+
+  // Confirmacion frontal: al menos un frontal debe superar frontWallAdc
+  // y el otro debe acompañar por encima de este valor.
+  int frontConfirmAdc = 1800;
+
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
 
@@ -160,6 +165,10 @@ struct ControlConfig {
   int rightWallAcquireAdc = 2000;
 
   int approachMinPwm = 165;
+
+  // Cuando no hay pared lateral valida, los encoders mantienen la recta.
+  float straightEncoderKp = 1.0f;
+  int straightEncoderMaxCorrection = 20;
 
   // Maniobras por encoder - nueva calibracion.
   int turnPwm = 165;
@@ -220,6 +229,24 @@ SensorData sFL, sFR, sLL, sLR;
 bool frontBlocked = false;
 bool rightOpen = false;
 bool leftOpen = false;
+
+// Pared frontal confirmada durante varias muestras.
+uint8_t frontWallStableCount = 0;
+
+// Estado con histeresis: se adquiere pared a rightWallAcquireAdc y
+// no se considera perdida hasta bajar de rightOpenAdc.
+bool rightWallControlActive = false;
+
+// Referencia de encoders para mantener recta cuando no hay pared.
+int32_t straightStartLeft = 0;
+int32_t straightStartRight = 0;
+float straightEncoderCorrection = 0.0f;
+
+// "Wall break": evento cuando habia pared derecha y deja de haberla.
+// Por ahora solo se usa como referencia/telemetria, no obliga un giro.
+uint32_t rightWallBreakCount = 0;
+int32_t lastWallBreakLeft = 0;
+int32_t lastWallBreakRight = 0;
 
 // Confirmacion temporal para no reaccionar a una sola muestra lateral.
 uint8_t rightOpenStableCount = 0;
@@ -409,6 +436,46 @@ uint32_t getMoveTicksAverage() {
   return (deltaLeft + deltaRight) / 2UL;
 }
 
+void captureStraightReference() {
+  readPhysicalEncoders(straightStartLeft, straightStartRight);
+  straightEncoderCorrection = 0.0f;
+}
+
+uint32_t getTicksSinceWallBreak() {
+  int32_t left;
+  int32_t right;
+  readPhysicalEncoders(left, right);
+
+  uint32_t dl = (uint32_t)abs(left - lastWallBreakLeft);
+  uint32_t dr = (uint32_t)abs(right - lastWallBreakRight);
+  return (dl + dr) / 2UL;
+}
+
+void driveStraightWithEncoders(int basePwm) {
+  int32_t left;
+  int32_t right;
+  readPhysicalEncoders(left, right);
+
+  int32_t dl = abs(left - straightStartLeft);
+  int32_t dr = abs(right - straightStartRight);
+  int32_t error = dl - dr;
+
+  straightEncoderCorrection =
+    constrain(cfg.straightEncoderKp * (float)error,
+              -(float)cfg.straightEncoderMaxCorrection,
+              (float)cfg.straightEncoderMaxCorrection);
+
+  basePwm = constrain(basePwm, MIN_MOVING_PWM, 255);
+
+  int leftPwm = basePwm - (int)straightEncoderCorrection;
+  int rightPwm = basePwm + (int)straightEncoderCorrection;
+
+  leftPwm = constrain(leftPwm, MIN_MOVING_PWM, 255);
+  rightPwm = constrain(rightPwm, MIN_MOVING_PWM, 255);
+
+  setDrive(leftPwm, rightPwm);
+}
+
 const char* encoderTestActionName(EncoderTestAction action) {
   switch (action) {
     case ENC_TEST_RIGHT_90:  return "DERECHA 90";
@@ -518,12 +585,44 @@ void updateAllSensors() {
   updateOneSensor(PIN_IR_SIDE_LEFT,   sLL);
   updateOneSensor(PIN_IR_SIDE_RIGHT,  sLR);
 
-  frontBlocked =
-    (sFL.filtered >= cfg.frontWallAdc) ||
-    (sFR.filtered >= cfg.frontWallAdc);
+  // Frente robusto inspirado en la validacion por multiples sensores:
+  // una lectura alta aislada NO alcanza para declarar pared.
+  uint16_t frontHigh = max(sFL.filtered, sFR.filtered);
+  uint16_t frontLow  = min(sFL.filtered, sFR.filtered);
+
+  bool frontCandidate =
+    (frontHigh >= cfg.frontWallAdc) &&
+    (frontLow  >= cfg.frontConfirmAdc);
+
+  if (frontCandidate) {
+    if (frontWallStableCount < 10) frontWallStableCount++;
+  } else {
+    frontWallStableCount = 0;
+  }
+
+  // 3 muestras consecutivas (~30 ms con loop de control a 100 Hz).
+  frontBlocked = frontWallStableCount >= 3;
 
   rightOpen = sLR.filtered < cfg.rightOpenAdc;
   leftOpen  = sLL.filtered < cfg.leftOpenAdc;
+
+  // Histeresis para el control lateral:
+  // adquirir pared a un nivel alto, perderla a un nivel mas bajo.
+  if (rightWallControlActive) {
+    if (sLR.filtered < cfg.rightOpenAdc) {
+      rightWallControlActive = false;
+
+      readPhysicalEncoders(lastWallBreakLeft, lastWallBreakRight);
+      rightWallBreakCount++;
+
+      captureStraightReference();
+    }
+  } else {
+    if (sLR.filtered >= cfg.rightWallAcquireAdc) {
+      rightWallControlActive = true;
+      straightEncoderCorrection = 0.0f;
+    }
+  }
 
   if (rightOpen) {
     if (rightOpenStableCount < 10) rightOpenStableCount++;
@@ -532,7 +631,7 @@ void updateAllSensors() {
   }
 }
 
-// Para aproximacion frontal usamos el sensor que ve la pared mas cerca.
+// Valor frontal conservado para telemetria/aproximacion.
 uint16_t getFrontAdc() {
   return max(sFL.filtered, sFR.filtered);
 }
@@ -662,11 +761,9 @@ void runMaze() {
       break;
 
     case STATE_FOLLOW: {
-      uint16_t front = getFrontAdc();
-
       // UNICA condicion que provoca un giro:
-      // encontrar una pared frontal.
-      if (front >= cfg.frontWallAdc) {
+      // pared frontal confirmada por ambos sensores durante varias muestras.
+      if (frontBlocked) {
         stopMotors();
         enterState(STATE_BRAKE);
         break;
@@ -675,14 +772,15 @@ void runMaze() {
       int mazePwm = max(cfg.basePwm, cfg.approachMinPwm);
       mazePwm = constrain(mazePwm, MIN_MOVING_PWM, 255);
 
-      // Si existe pared derecha, la sigue con PID.
-      if (sLR.filtered >= cfg.rightWallAcquireAdc) {
+      if (rightWallControlActive) {
+        // Pared valida: correccion lateral por IR.
+        straightEncoderCorrection = 0.0f;
         followRightWallAtPwm(mazePwm);
       } else {
-        // Si NO existe pared derecha, no gira ni se detiene:
-        // simplemente avanza recto buscandola.
+        // Sin pared: sigue avanzando, pero ya no a PWM abierto.
+        // Los encoders mantienen ambas ruedas recorriendo la misma distancia.
         resetPid();
-        setDrive(mazePwm, mazePwm);
+        driveStraightWithEncoders(mazePwm);
       }
 
       break;
@@ -737,6 +835,7 @@ void runMaze() {
         stopMotors();
         pendingTurnState = STATE_STOPPED;
         resetPid();
+        captureStraightReference();
         enterState(STATE_FOLLOW);
         break;
       }
@@ -757,6 +856,7 @@ void runMaze() {
         stopMotors();
         pendingTurnState = STATE_STOPPED;
         resetPid();
+        captureStraightReference();
         enterState(STATE_FOLLOW);
         break;
       }
@@ -777,6 +877,7 @@ void runMaze() {
         stopMotors();
         pendingTurnState = STATE_STOPPED;
         resetPid();
+        captureStraightReference();
         enterState(STATE_FOLLOW);
         break;
       }
@@ -6659,7 +6760,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre avanza hacia adelante. Si ve pared derecha, la sigue con PID. Si no ve pared derecha, avanza recto buscándola. Solo gira cuando encuentra una pared frontal.
+          Siempre avanza hacia adelante. Con pared derecha válida usa PID; al perderla registra un wall-break y mantiene la recta con encoders. La pared frontal se confirma con ambos sensores antes de ordenar un giro.
         </div>
       </div>
 
@@ -6667,10 +6768,13 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <h2>Deteccion y frenado</h2>
         <div class="field"><span>Comenzar a frenar ADC</span><input class="cfg" id="frontSlowAdc" type="number" step="1"></div>
         <div class="field"><span>STOP frontal ADC</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
+        <div class="field"><span>Confirmacion segundo frontal ADC</span><input class="cfg" id="frontConfirmAdc" type="number" step="1"></div>
         <div class="field"><span>PWM minimo aproximacion</span><input class="cfg" id="approachMinPwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Detectar pared derecha ADC</span><input class="cfg" id="rightWallAcquireAdc" type="number" step="1"></div>
+        <div class="field"><span>Kp recta por encoders</span><input class="cfg" id="straightEncoderKp" type="number" min="0" max="20" step="0.1"></div>
+        <div class="field"><span>Correccion max recta</span><input class="cfg" id="straightEncoderMaxCorrection" type="number" min="0" max="100" step="1"></div>
       </div>
 
       <div class="card">
@@ -6696,6 +6800,10 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
           <div class="metric"><div class="label">Motor derecho</div><div class="value" id="mMotorR">0</div></div>
           <div class="metric"><div class="label">Encoder izquierdo</div><div class="value" id="mEncL">0</div></div>
           <div class="metric"><div class="label">Encoder derecho</div><div class="value" id="mEncR">0</div></div>
+          <div class="metric"><div class="label">Control lateral</div><div class="value" id="mWallControl">NO</div></div>
+          <div class="metric"><div class="label">Correccion encoder</div><div class="value" id="mStraightCorr">0</div></div>
+          <div class="metric"><div class="label">Wall breaks derecha</div><div class="value" id="mWallBreaks">0</div></div>
+          <div class="metric"><div class="label">Ticks desde wall break</div><div class="value" id="mSinceBreak">0</div></div>
           <div class="metric"><div class="label">Error PID</div><div class="value" id="mError">0</div></div>
           <div class="metric"><div class="label">Correccion PID</div><div class="value" id="mCorrection">0</div></div>
         </div>
@@ -6884,8 +6992,10 @@ function calculateTicksPerCm(){
 async function applyConfig(){
   const ids=[
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
-    'frontSlowAdc','frontWallAdc','approachMinPwm',
-    'rightOpenAdc','leftOpenAdc','rightWallAcquireAdc','turnPwm','turnSlowPwm',
+    'frontSlowAdc','frontWallAdc','frontConfirmAdc','approachMinPwm',
+    'rightOpenAdc','leftOpenAdc','rightWallAcquireAdc',
+    'straightEncoderKp','straightEncoderMaxCorrection',
+    'turnPwm','turnSlowPwm',
     'turn90Ticks','turn180Ticks',
     'decisionWaitMs','settleMs'
   ];
@@ -6953,6 +7063,10 @@ async function updateStatus(){
     document.getElementById('mMotorR').textContent=d.motor.right;
     document.getElementById('mEncL').textContent=d.enc.left;
     document.getElementById('mEncR').textContent=d.enc.right;
+    document.getElementById('mWallControl').textContent=d.navigation.rightWallControl?'PID':'RECTA';
+    document.getElementById('mStraightCorr').textContent=d.navigation.straightCorrection.toFixed(1);
+    document.getElementById('mWallBreaks').textContent=d.navigation.rightWallBreaks;
+    document.getElementById('mSinceBreak').textContent=d.navigation.ticksSinceWallBreak;
     document.getElementById('mError').textContent=d.pid.error.toFixed(1);
     document.getElementById('mCorrection').textContent=d.pid.correction.toFixed(1);
 
@@ -7073,6 +7187,13 @@ void handleStatus() {
   json += "\"rb\":" + String(digitalRead(PIN_ENC_L_B));
   json += "},";
 
+  json += "\"navigation\":{";
+  json += "\"rightWallControl\":" + String(rightWallControlActive ? "true" : "false") + ",";
+  json += "\"straightCorrection\":" + String(straightEncoderCorrection, 2) + ",";
+  json += "\"rightWallBreaks\":" + String(rightWallBreakCount) + ",";
+  json += "\"ticksSinceWallBreak\":" + String(getTicksSinceWallBreak());
+  json += "},";
+
   json += "\"encoderTest\":{";
   json += "\"active\":" + String(encoderTestActive ? "true" : "false") + ",";
   json += "\"completed\":" + String(encoderTestCompleted ? "true" : "false") + ",";
@@ -7096,10 +7217,13 @@ void handleStatus() {
   json += "\"maxCorrection\":" + String(cfg.maxCorrection) + ",";
   json += "\"frontSlowAdc\":" + String(cfg.frontSlowAdc) + ",";
   json += "\"frontWallAdc\":" + String(cfg.frontWallAdc) + ",";
+  json += "\"frontConfirmAdc\":" + String(cfg.frontConfirmAdc) + ",";
   json += "\"approachMinPwm\":" + String(cfg.approachMinPwm) + ",";
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"rightWallAcquireAdc\":" + String(cfg.rightWallAcquireAdc) + ",";
+  json += "\"straightEncoderKp\":" + String(cfg.straightEncoderKp, 3) + ",";
+  json += "\"straightEncoderMaxCorrection\":" + String(cfg.straightEncoderMaxCorrection) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
   json += "\"turnSlowPwm\":" + String(cfg.turnSlowPwm) + ",";
   json += "\"turn90Ticks\":" + String(cfg.turn90Ticks) + ",";
@@ -7138,6 +7262,9 @@ void handleMode() {
   encoderTestCompleted = false;
   stopMotors();
   resetPid();
+  frontWallStableCount = 0;
+  rightWallControlActive = false;
+  captureStraightReference();
 
   if (mode == "TEST") {
     activeMode = MODE_TEST;
@@ -7180,6 +7307,9 @@ void handleRun() {
     running = true;
 
     if (activeMode == MODE_MAZE) {
+      frontWallStableCount = 0;
+      rightWallControlActive = false;
+      captureStraightReference();
       enterState(STATE_FOLLOW);
     } else {
       robotState = STATE_FOLLOW;
@@ -7320,6 +7450,9 @@ void handleConfig() {
   if (server.hasArg("frontWallAdc"))
     cfg.frontWallAdc = constrain(server.arg("frontWallAdc").toInt(), 0, 4095);
 
+  if (server.hasArg("frontConfirmAdc"))
+    cfg.frontConfirmAdc = constrain(server.arg("frontConfirmAdc").toInt(), 0, 4095);
+
   if (server.hasArg("approachMinPwm"))
     cfg.approachMinPwm = constrain(server.arg("approachMinPwm").toInt(), MIN_MOVING_PWM, 255);
 
@@ -7331,6 +7464,13 @@ void handleConfig() {
 
   if (server.hasArg("rightWallAcquireAdc"))
     cfg.rightWallAcquireAdc = constrain(server.arg("rightWallAcquireAdc").toInt(), 0, 4095);
+
+  if (server.hasArg("straightEncoderKp"))
+    cfg.straightEncoderKp = constrain(server.arg("straightEncoderKp").toFloat(), 0.0f, 20.0f);
+
+  if (server.hasArg("straightEncoderMaxCorrection"))
+    cfg.straightEncoderMaxCorrection =
+      constrain(server.arg("straightEncoderMaxCorrection").toInt(), 0, 100);
 
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), MIN_MOVING_PWM, 255);
