@@ -528,8 +528,6 @@ void updateAllSensors() {
     if (frontWallStableCount < 10) frontWallStableCount++;
   } else {
     frontWallStableCount = 0;
-  centerStableCount = 0;
-  centerSideErrorAdc = 0;
   }
 
   // 3 lecturas consecutivas (~30 ms a 100 Hz).
@@ -7221,8 +7219,8 @@ void handleRun() {
 
     if (activeMode == MODE_MAZE) {
       frontWallStableCount = 0;
-  centerStableCount = 0;
-  centerSideErrorAdc = 0;
+      centerStableCount = 0;
+      centerSideErrorAdc = 0;
       enterState(STATE_FOLLOW);
     } else {
       robotState = STATE_FOLLOW;
