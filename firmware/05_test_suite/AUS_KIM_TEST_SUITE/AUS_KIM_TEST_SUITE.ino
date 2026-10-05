@@ -155,10 +155,10 @@ struct ControlConfig {
 
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
-  int approachMinPwm = 155;
+  int approachMinPwm = 140;
 
   // El Maze gira lento por PID + sensores.
-  int turnPwm = 90;
+  int turnPwm = 110;
 
   // Valores de encoder conservados solo para la pestaña de calibracion.
   int turn90Ticks = 160;
@@ -192,10 +192,10 @@ const uint16_t BRAKE_SETTLE_MS = 80;
 
 // Limites duros del modo autonomo.
 // Ningun PID del Maze puede superar estos valores.
-const int MAZE_FORWARD_PWM = 155;
-const int MAZE_STEER_MIN_PWM = 80;
-const int MAZE_TURN_MIN_PWM = 80;
-const int MAZE_TURN_MAX_PWM = 100;
+const int MAZE_FORWARD_MIN_PWM = 140;
+const int MAZE_FORWARD_MAX_PWM = 165;
+const int MAZE_TURN_MIN_PWM = 90;
+const int MAZE_TURN_MAX_PWM = 130;
 
 // El angulo del giro NO depende de estos tiempos.
 // Son solo protecciones para evitar terminar demasiado pronto o girar infinito.
@@ -599,16 +599,17 @@ void driveRightWallPid(
 }
 
 void followRightWallAtPwm(int basePwm) {
-  // Avance nominal 155. El PID solo puede BAJAR una rueda para corregir;
-  // ninguna rueda puede superar 155.
-  basePwm = constrain(basePwm, MAZE_STEER_MIN_PWM, MAZE_FORWARD_PWM);
+  // Seguimiento normal: cada rueda queda limitada entre 140 y 165 PWM.
+  // El PID puede desacelerar una rueda y acelerar la otra, pero nunca
+  // salir de este rango.
+  basePwm = constrain(basePwm, MAZE_FORWARD_MIN_PWM, MAZE_FORWARD_MAX_PWM);
 
   driveRightWallPid(
     basePwm,
     cfg.targetRightAdc,
     cfg.maxCorrection,
-    MAZE_STEER_MIN_PWM,
-    MAZE_FORWARD_PWM
+    MAZE_FORWARD_MIN_PWM,
+    MAZE_FORWARD_MAX_PWM
   );
 }
 
@@ -617,9 +618,8 @@ void followRightWall() {
 }
 
 int calculateApproachPwm() {
-  // El Maze trabaja a 155 y frena completamente al confirmar el frente.
   if (frontBlocked) return 0;
-  return MAZE_FORWARD_PWM;
+  return constrain(cfg.basePwm, MAZE_FORWARD_MIN_PWM, MAZE_FORWARD_MAX_PWM);
 }
 
 bool turnFrontClear() {
@@ -639,7 +639,7 @@ bool turnRightWallLocked() {
 
 void driveForcedPidTurn(bool turnRight) {
   // Calcula el PID con objetivo extremo, pero usa el resultado SOLO
-  // para modular la intensidad entre 80 y 100 PWM.
+  // para modular la intensidad entre 90 y 130 PWM.
   int forcedTarget = turnRight ? 4095 : 0;
 
   errorPid = (float)sLR.filtered - (float)forcedTarget;
@@ -658,7 +658,7 @@ void driveForcedPidTurn(bool turnRight) {
 
   magnitude = constrain(magnitude, MAZE_TURN_MIN_PWM, MAZE_TURN_MAX_PWM);
 
-  // Giro sobre el lugar, siempre limitado a 80..100.
+  // Giro sobre el lugar, siempre limitado a 90..130.
   if (turnRight) {
     setDrive(+magnitude, -magnitude);
   } else {
@@ -671,7 +671,7 @@ void driveForcedPidTurn(bool turnRight) {
 
 void driveTurnAlignmentPid() {
   // Cerca del final del giro sigue usando el lateral derecho,
-  // pero mantiene la velocidad de giro dentro de 80..100.
+  // pero mantiene la velocidad de giro dentro de 90..130.
   errorPid = (float)sLR.filtered - (float)cfg.targetRightAdc;
   derivativePid = errorPid - prevErrorPid;
 
@@ -793,7 +793,7 @@ void runMaze() {
         break;
       }
 
-      followRightWallAtPwm(MAZE_FORWARD_PWM);
+      followRightWallAtPwm(cfg.basePwm);
       break;
     }
 
@@ -6674,7 +6674,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>Ki</span><input class="cfg" id="ki" type="number" step="0.001"></div>
         <div class="field"><span>Kd</span><input class="cfg" id="kd" type="number" step="0.01"></div>
         <div class="field"><span>Objetivo ADC derecha</span><input class="cfg" id="targetRightAdc" type="number" step="1"></div>
-        <div class="field"><span>PWM base</span><input class="cfg" id="basePwm" type="number" min="155" max="255" step="1"></div>
+        <div class="field"><span>PWM base</span><input class="cfg" id="basePwm" type="number" min="140" max="165" step="1"></div>
         <div class="field"><span>Correccion maxima</span><input class="cfg" id="maxCorrection" type="number" min="0" max="255" step="1"></div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
@@ -6711,7 +6711,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Avance limitado a PWM 155. El PID nunca puede superar 155. Al confirmar frontal ≤1750 se detiene a 0; los giros PID trabajan solamente entre PWM 80 y 100.
+          Avance PID limitado entre PWM 140 y 165 (base 155). Al confirmar frontal ≤1750 se detiene a 0; los giros PID trabajan solamente entre PWM 90 y 130.
         </div>
       </div>
 
@@ -6720,14 +6720,14 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>STOP frontal ADC (≤)</span><input class="cfg" id="frontSlowAdc" type="number" step="1"></div>
         <div class="field"><span>STOP frontal principal (≤)</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
         <div class="field"><span>Confirmacion segundo frontal ADC</span><input class="cfg" id="frontConfirmAdc" type="number" step="1"></div>
-        <div class="field"><span>PWM avance</span><input class="cfg" id="approachMinPwm" type="number" min="155" max="155" step="1"></div>
+        <div class="field"><span>PWM avance</span><input class="cfg" id="approachMinPwm" type="number" min="140" max="165" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
       </div>
 
       <div class="card">
         <h2>Giros por PID</h2>
-        <div class="field"><span>PWM giro PID</span><input class="cfg" id="turnPwm" type="number" min="80" max="100" step="1"></div>
+        <div class="field"><span>PWM giro PID</span><input class="cfg" id="turnPwm" type="number" min="90" max="130" step="1"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="3000" step="10"></div>
         <div class="hint">No usa ticks ni un tiempo fijo para completar el ángulo. El PID fuerza el sentido del giro y, cuando el frente queda libre, se alinea otra vez con el objetivo de pared derecha.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
@@ -7338,7 +7338,7 @@ void handleConfig() {
     cfg.targetRightAdc = constrain(server.arg("targetRightAdc").toInt(), 0, 4095);
 
   if (server.hasArg("basePwm"))
-    cfg.basePwm = constrain(server.arg("basePwm").toInt(), MAZE_STEER_MIN_PWM, MAZE_FORWARD_PWM);
+    cfg.basePwm = constrain(server.arg("basePwm").toInt(), MAZE_FORWARD_MIN_PWM, MAZE_FORWARD_MAX_PWM);
 
   if (server.hasArg("maxCorrection"))
     cfg.maxCorrection = constrain(server.arg("maxCorrection").toInt(), 0, 255);
@@ -7353,7 +7353,7 @@ void handleConfig() {
     cfg.frontConfirmAdc = constrain(server.arg("frontConfirmAdc").toInt(), 0, 4095);
 
   if (server.hasArg("approachMinPwm"))
-    cfg.approachMinPwm = MAZE_FORWARD_PWM;
+    cfg.approachMinPwm = constrain(server.arg("approachMinPwm").toInt(), MAZE_FORWARD_MIN_PWM, MAZE_FORWARD_MAX_PWM);
 
   if (server.hasArg("rightOpenAdc"))
     cfg.rightOpenAdc = constrain(server.arg("rightOpenAdc").toInt(), 0, 4095);
