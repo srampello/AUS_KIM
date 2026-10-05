@@ -146,19 +146,19 @@ struct ControlConfig {
   // Deteccion de laberinto
   // frontSlowAdc: comienza a desacelerar.
   // frontWallAdc: STOP completo y decision.
-  int frontSlowAdc = 1900;
-  int frontWallAdc = 2000;
+  int frontSlowAdc = 1750;
+  int frontWallAdc = 1750;
 
-  // Confirmacion frontal: al menos un frontal debe superar frontWallAdc
-  // y el otro debe acompañar por encima de este valor.
-  int frontConfirmAdc = 1800;
+  // Para los frontales, por pedido de calibracion actual:
+  // ADC <= 1750 significa pared/STOP.
+  int frontConfirmAdc = 1750;
 
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
-  int approachMinPwm = 165;
+  int approachMinPwm = 155;
 
-  // El Maze gira por PID + sensores. Los encoders quedan solo para pruebas.
-  int turnPwm = 165;
+  // El Maze gira lento por PID + sensores.
+  int turnPwm = 90;
 
   // Valores de encoder conservados solo para la pestaña de calibracion.
   int turn90Ticks = 160;
@@ -189,6 +189,13 @@ const int MIN_MOVING_PWM = 155;
 
 // Pausa mecanica tras frenar frente a una pared.
 const uint16_t BRAKE_SETTLE_MS = 80;
+
+// Limites duros del modo autonomo.
+// Ningun PID del Maze puede superar estos valores.
+const int MAZE_FORWARD_PWM = 155;
+const int MAZE_STEER_MIN_PWM = 80;
+const int MAZE_TURN_MIN_PWM = 80;
+const int MAZE_TURN_MAX_PWM = 100;
 
 // El angulo del giro NO depende de estos tiempos.
 // Son solo protecciones para evitar terminar demasiado pronto o girar infinito.
@@ -514,14 +521,12 @@ void updateAllSensors() {
   updateOneSensor(PIN_IR_SIDE_LEFT,   sLL);
   updateOneSensor(PIN_IR_SIDE_RIGHT,  sLR);
 
-  // Una lectura frontal aislada no alcanza para frenar:
-  // un sensor supera STOP y el otro debe acompañar.
-  uint16_t frontHigh = max(sFL.filtered, sFR.filtered);
-  uint16_t frontLow  = min(sFL.filtered, sFR.filtered);
-
+  // STOP frontal segun la calibracion actual:
+  // ambos frontales deben confirmar ADC <= umbral.
+  // Asi una lectura aislada no alcanza para detener el robot.
   bool frontCandidate =
-    (frontHigh >= cfg.frontWallAdc) &&
-    (frontLow  >= cfg.frontConfirmAdc);
+    (sFL.filtered <= cfg.frontWallAdc) &&
+    (sFR.filtered <= cfg.frontConfirmAdc);
 
   if (frontCandidate) {
     if (frontWallStableCount < 10) frontWallStableCount++;
@@ -557,7 +562,8 @@ void driveRightWallPid(
   int basePwm,
   int targetAdc,
   int maxCorrection,
-  int minWheelPwm
+  int minWheelPwm,
+  int maxWheelPwm
 ) {
   errorPid = (float)sLR.filtered - (float)targetAdc;
 
@@ -577,27 +583,32 @@ void driveRightWallPid(
     (float)maxCorrection
   );
 
-  basePwm = constrain(basePwm, 0, 255);
+  maxWheelPwm = constrain(maxWheelPwm, 0, 255);
+  minWheelPwm = constrain(minWheelPwm, 0, maxWheelPwm);
+  basePwm = constrain(basePwm, minWheelPwm, maxWheelPwm);
 
   int leftPwm  = basePwm - (int)correctionPid;
   int rightPwm = basePwm + (int)correctionPid;
 
-  leftPwm  = constrain(leftPwm, minWheelPwm, 255);
-  rightPwm = constrain(rightPwm, minWheelPwm, 255);
+  // Techo duro: el PID nunca puede saturar una rueda a 255.
+  leftPwm  = constrain(leftPwm, minWheelPwm, maxWheelPwm);
+  rightPwm = constrain(rightPwm, minWheelPwm, maxWheelPwm);
 
   setDrive(leftPwm, rightPwm);
   prevErrorPid = errorPid;
 }
 
 void followRightWallAtPwm(int basePwm) {
-  // Seguimiento normal: ambas ruedas siempre hacia adelante y nunca
-  // por debajo del minimo mecanico medido.
-  basePwm = constrain(basePwm, MIN_MOVING_PWM, 255);
+  // Avance nominal 155. El PID solo puede BAJAR una rueda para corregir;
+  // ninguna rueda puede superar 155.
+  basePwm = constrain(basePwm, MAZE_STEER_MIN_PWM, MAZE_FORWARD_PWM);
+
   driveRightWallPid(
     basePwm,
     cfg.targetRightAdc,
     cfg.maxCorrection,
-    MIN_MOVING_PWM
+    MAZE_STEER_MIN_PWM,
+    MAZE_FORWARD_PWM
   );
 }
 
@@ -606,34 +617,15 @@ void followRightWall() {
 }
 
 int calculateApproachPwm() {
-  uint16_t front = getFrontAdc();
-
-  if (front <= cfg.frontSlowAdc) {
-    return cfg.basePwm;
-  }
-
-  if (front >= cfg.frontWallAdc) {
-    return 0;
-  }
-
-  int base = constrain(cfg.basePwm, MIN_MOVING_PWM, 255);
-  int minPwm = constrain(cfg.approachMinPwm, MIN_MOVING_PWM, base);
-
-  long pwm = map(
-    (long)front,
-    (long)cfg.frontSlowAdc,
-    (long)cfg.frontWallAdc,
-    (long)base,
-    (long)minPwm
-  );
-
-  return constrain((int)pwm, minPwm, base);
+  // El Maze trabaja a 155 y frena completamente al confirmar el frente.
+  if (frontBlocked) return 0;
+  return MAZE_FORWARD_PWM;
 }
 
 bool turnFrontClear() {
   return
-    sFL.filtered < cfg.frontSlowAdc &&
-    sFR.filtered < cfg.frontSlowAdc;
+    sFL.filtered > cfg.frontWallAdc &&
+    sFR.filtered > cfg.frontConfirmAdc;
 }
 
 bool turnRightWallReady() {
@@ -646,28 +638,66 @@ bool turnRightWallLocked() {
 }
 
 void driveForcedPidTurn(bool turnRight) {
-  // Se usa el MISMO PID del lateral derecho, pero con un objetivo extremo:
-  // target alto -> error negativo -> giro fuerte a derecha.
-  // target bajo -> error positivo -> giro fuerte a izquierda.
+  // Calcula el PID con objetivo extremo, pero usa el resultado SOLO
+  // para modular la intensidad entre 80 y 100 PWM.
   int forcedTarget = turnRight ? 4095 : 0;
 
-  driveRightWallPid(
-    cfg.turnPwm,
-    forcedTarget,
-    cfg.turnPwm,
-    0
-  );
+  errorPid = (float)sLR.filtered - (float)forcedTarget;
+  derivativePid = errorPid - prevErrorPid;
+
+  float raw =
+      cfg.kp * errorPid +
+      cfg.kd * derivativePid;
+
+  int magnitude = MAZE_TURN_MIN_PWM +
+    (int)map(
+      (long)constrain((int)abs(raw), 0, 300),
+      0, 300,
+      0, MAZE_TURN_MAX_PWM - MAZE_TURN_MIN_PWM
+    );
+
+  magnitude = constrain(magnitude, MAZE_TURN_MIN_PWM, MAZE_TURN_MAX_PWM);
+
+  // Giro sobre el lugar, siempre limitado a 80..100.
+  if (turnRight) {
+    setDrive(+magnitude, -magnitude);
+  } else {
+    setDrive(-magnitude, +magnitude);
+  }
+
+  correctionPid = turnRight ? -(float)magnitude : (float)magnitude;
+  prevErrorPid = errorPid;
 }
 
 void driveTurnAlignmentPid() {
-  // Fase final del giro: vuelve al objetivo real de pared derecha.
-  // Se permite que la rueda interior baje hasta 0 para poder cerrar el giro.
-  driveRightWallPid(
-    cfg.turnPwm,
-    cfg.targetRightAdc,
-    cfg.turnPwm,
-    0
-  );
+  // Cerca del final del giro sigue usando el lateral derecho,
+  // pero mantiene la velocidad de giro dentro de 80..100.
+  errorPid = (float)sLR.filtered - (float)cfg.targetRightAdc;
+  derivativePid = errorPid - prevErrorPid;
+
+  float raw =
+      cfg.kp * errorPid +
+      cfg.kd * derivativePid;
+
+  int magnitude = MAZE_TURN_MIN_PWM +
+    (int)map(
+      (long)constrain((int)abs(raw), 0, 300),
+      0, 300,
+      0, MAZE_TURN_MAX_PWM - MAZE_TURN_MIN_PWM
+    );
+
+  magnitude = constrain(magnitude, MAZE_TURN_MIN_PWM, MAZE_TURN_MAX_PWM);
+
+  // Si esta demasiado cerca de la pared derecha, corrige a izquierda.
+  // Si esta demasiado lejos, corrige a derecha.
+  if (errorPid > 0) {
+    setDrive(-magnitude, +magnitude);
+  } else {
+    setDrive(+magnitude, -magnitude);
+  }
+
+  correctionPid = raw;
+  prevErrorPid = errorPid;
 }
 
 // ============================================================
@@ -763,9 +793,7 @@ void runMaze() {
         break;
       }
 
-      int mazePwm = max(cfg.basePwm, cfg.approachMinPwm);
-      mazePwm = constrain(mazePwm, MIN_MOVING_PWM, 255);
-      followRightWallAtPwm(mazePwm);
+      followRightWallAtPwm(MAZE_FORWARD_PWM);
       break;
     }
 
@@ -6683,23 +6711,23 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          El robot usa siempre el PID del lateral derecho. Ante una pared frontal: derecha libre → gira a derecha; derecha cerrada → gira a izquierda. El giro también se controla por PID y termina al recuperar la nueva pared derecha.
+          Avance limitado a PWM 155. El PID nunca puede superar 155. Al confirmar frontal ≤1750 se detiene a 0; los giros PID trabajan solamente entre PWM 80 y 100.
         </div>
       </div>
 
       <div class="card">
         <h2>Deteccion y frenado</h2>
-        <div class="field"><span>Comenzar a frenar ADC</span><input class="cfg" id="frontSlowAdc" type="number" step="1"></div>
-        <div class="field"><span>STOP frontal ADC</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
+        <div class="field"><span>STOP frontal ADC (≤)</span><input class="cfg" id="frontSlowAdc" type="number" step="1"></div>
+        <div class="field"><span>STOP frontal principal (≤)</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
         <div class="field"><span>Confirmacion segundo frontal ADC</span><input class="cfg" id="frontConfirmAdc" type="number" step="1"></div>
-        <div class="field"><span>PWM minimo aproximacion</span><input class="cfg" id="approachMinPwm" type="number" min="155" max="255" step="1"></div>
+        <div class="field"><span>PWM avance</span><input class="cfg" id="approachMinPwm" type="number" min="155" max="155" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
       </div>
 
       <div class="card">
         <h2>Giros por PID</h2>
-        <div class="field"><span>PWM base del giro PID</span><input class="cfg" id="turnPwm" type="number" min="155" max="255" step="1"></div>
+        <div class="field"><span>PWM giro PID</span><input class="cfg" id="turnPwm" type="number" min="80" max="100" step="1"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="3000" step="10"></div>
         <div class="hint">No usa ticks ni un tiempo fijo para completar el ángulo. El PID fuerza el sentido del giro y, cuando el frente queda libre, se alinea otra vez con el objetivo de pared derecha.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
@@ -7310,7 +7338,7 @@ void handleConfig() {
     cfg.targetRightAdc = constrain(server.arg("targetRightAdc").toInt(), 0, 4095);
 
   if (server.hasArg("basePwm"))
-    cfg.basePwm = constrain(server.arg("basePwm").toInt(), MIN_MOVING_PWM, 255);
+    cfg.basePwm = constrain(server.arg("basePwm").toInt(), MAZE_STEER_MIN_PWM, MAZE_FORWARD_PWM);
 
   if (server.hasArg("maxCorrection"))
     cfg.maxCorrection = constrain(server.arg("maxCorrection").toInt(), 0, 255);
@@ -7325,7 +7353,7 @@ void handleConfig() {
     cfg.frontConfirmAdc = constrain(server.arg("frontConfirmAdc").toInt(), 0, 4095);
 
   if (server.hasArg("approachMinPwm"))
-    cfg.approachMinPwm = constrain(server.arg("approachMinPwm").toInt(), MIN_MOVING_PWM, 255);
+    cfg.approachMinPwm = MAZE_FORWARD_PWM;
 
   if (server.hasArg("rightOpenAdc"))
     cfg.rightOpenAdc = constrain(server.arg("rightOpenAdc").toInt(), 0, 4095);
@@ -7334,7 +7362,7 @@ void handleConfig() {
     cfg.leftOpenAdc = constrain(server.arg("leftOpenAdc").toInt(), 0, 4095);
 
   if (server.hasArg("turnPwm"))
-    cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), MIN_MOVING_PWM, 255);
+    cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), MAZE_TURN_MIN_PWM, MAZE_TURN_MAX_PWM);
 
   if (server.hasArg("turn90Ticks"))
     cfg.turn90Ticks = constrain(server.arg("turn90Ticks").toInt(), 1, 5000);
