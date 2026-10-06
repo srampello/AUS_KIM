@@ -7126,7 +7126,6 @@ void handleMode() {
   rightOpenStableCount = 0;
   leftOpenStableCount = 0;
   rightWallAcquireStableCount = 0;
-  turnExitStableCount = 0;
 
   if (mode == "TEST") {
     activeMode = MODE_TEST;
@@ -7173,8 +7172,7 @@ void handleRun() {
       rightOpenStableCount = 0;
       leftOpenStableCount = 0;
       rightWallAcquireStableCount = 0;
-      turnExitStableCount = 0;
-      enterState(STATE_FOLLOW);
+          enterState(STATE_FOLLOW);
     } else {
       robotState = STATE_FOLLOW;
     }
@@ -7373,7 +7371,6 @@ void handleStop() {
   rightOpenStableCount = 0;
   leftOpenStableCount = 0;
   rightWallAcquireStableCount = 0;
-  turnExitStableCount = 0;
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "STOP");
 }
