@@ -155,8 +155,8 @@ struct ControlConfig {
   int leftOpenAdc = 1750;
   int approachMinPwm = 140; // legacy
 
-  // Giro simple sobre el lugar.
-  int turnPwm = 100;
+  // Giro simple sobre el lugar, misma velocidad que avance.
+  int turnPwm = 155;
 
   // Valores de encoder conservados solo para la pestaña de calibracion.
   int turn90Ticks = 160;
@@ -729,7 +729,7 @@ void runMaze() {
       }
 
       // Giro lento y constante. No usa PID, encoder ni angulo por tiempo.
-      int turnPwm = constrain(cfg.turnPwm, 80, 120);
+      int turnPwm = 155;
       setDrive(-turnPwm, +turnPwm);
 
       // Al girar a izquierda la pared frontal pasa a quedar a la derecha.
@@ -767,7 +767,7 @@ void runMaze() {
         break;
       }
 
-      int turnPwm = constrain(cfg.turnPwm, 80, 120);
+      int turnPwm = 155;
       setDrive(+turnPwm, -turnPwm);
 
       // En una interseccion el frente ya puede estar libre desde el inicio,
@@ -6662,7 +6662,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre sigue la pared derecha por PID a velocidad base 155. Si pierde la pared derecha toma esa apertura. Si encuentra pared frontal con derecha cerrada, se detiene y gira a izquierda a PWM 100 hasta que el frente quede libre.
+          Siempre sigue la pared derecha por PID a velocidad base 155. Si pierde la pared derecha toma esa apertura. Si encuentra pared frontal con derecha cerrada, se detiene y gira a izquierda a PWM 155 hasta que el frente quede libre.
         </div>
       </div>
 
@@ -6676,9 +6676,9 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
 
       <div class="card">
         <h2>Giros básicos por sensores</h2>
-        <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="80" max="120" step="1"></div>
+        <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="155" max="155" step="1"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1000" step="10"></div>
-        <div class="hint">Giro nominal PWM 100. Izquierda: gira hasta ver frente libre y pared derecha. Derecha: toma una apertura y busca nuevamente pared derecha. No usa encoders.</div>
+        <div class="hint">Giro nominal PWM 155, igual que el avance. Izquierda: gira hasta ver frente libre y pared derecha. Derecha: toma una apertura y busca nuevamente pared derecha. No usa encoders.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -7314,7 +7314,7 @@ void handleConfig() {
     cfg.leftOpenAdc = constrain(server.arg("leftOpenAdc").toInt(), 0, 4095);
 
   if (server.hasArg("turnPwm"))
-    cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), 80, 120);
+    cfg.turnPwm = 155;
 
   if (server.hasArg("turn90Ticks"))
     cfg.turn90Ticks = constrain(server.arg("turn90Ticks").toInt(), 1, 5000);
