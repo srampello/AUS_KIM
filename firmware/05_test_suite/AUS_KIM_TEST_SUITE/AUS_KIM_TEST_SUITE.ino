@@ -123,8 +123,7 @@ enum RobotState : uint8_t {
   STATE_BRAKE,
   STATE_DECISION_WAIT,
   STATE_TURN_RIGHT,
-  STATE_TURN_LEFT,
-  STATE_UTURN
+  STATE_TURN_LEFT
 };
 
 struct SensorData {
@@ -146,26 +145,25 @@ struct ControlConfig {
   // Deteccion de laberinto
   // frontSlowAdc: comienza a desacelerar.
   // frontWallAdc: STOP completo y decision.
-  int frontSlowAdc = 1750;
+  int frontSlowAdc = 1750; // legacy
   int frontWallAdc = 1750;
 
-  // Para los frontales, por pedido de calibracion actual:
-  // ADC <= 1750 significa pared/STOP.
+  // Sharp: cerca = ADC mayor. Ambos frontales deben confirmar pared.
   int frontConfirmAdc = 1750;
 
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
-  int approachMinPwm = 140;
+  int approachMinPwm = 140; // legacy
 
-  // El Maze gira lento por PID + sensores.
-  int turnPwm = 110;
+  // Giro simple sobre el lugar.
+  int turnPwm = 100;
 
   // Valores de encoder conservados solo para la pestaña de calibracion.
   int turn90Ticks = 160;
   int turn180Ticks = 350;
 
   // Pausa detenido luego de decidir y antes de comenzar el giro.
-  int decisionWaitMs = 200;
+  int decisionWaitMs = 250;
 
   // Prueba manual
   int manualPwm = 80;
@@ -188,22 +186,20 @@ const float TICKS_PER_CM = 20.95f;
 const int MIN_MOVING_PWM = 155;
 
 // Pausa mecanica tras frenar frente a una pared.
-const uint16_t BRAKE_SETTLE_MS = 80;
+const uint16_t BRAKE_SETTLE_MS = 100;
 
-// Limites duros del modo autonomo.
-// Ningun PID del Maze puede superar estos valores.
+// Avance normal: base 155 con margen pequeno para que el PID corrija.
+const int MAZE_FORWARD_PWM = 155;
 const int MAZE_FORWARD_MIN_PWM = 140;
 const int MAZE_FORWARD_MAX_PWM = 165;
-const int MAZE_TURN_MIN_PWM = 90;
-const int MAZE_TURN_MAX_PWM = 130;
 
-// El angulo del giro NO depende de estos tiempos.
-// Son solo protecciones para evitar terminar demasiado pronto o girar infinito.
-const uint16_t TURN_PID_MIN_MS = 280;
-const uint16_t UTURN_PID_MIN_MS = 500;
-const uint16_t TURN_PID_TIMEOUT_MS = 1800;
-const int TURN_WALL_LOCK_TOLERANCE_ADC = 300;
-const uint8_t TURN_LOCK_SAMPLES = 3;
+// Giros simples por sensores.
+const int MAZE_TURN_PWM = 100;
+const uint16_t TURN_MIN_LEFT_MS = 120;
+const uint16_t TURN_MIN_RIGHT_MS = 180;
+const uint16_t TURN_RIGHT_FALLBACK_MS = 700;
+const uint16_t TURN_TIMEOUT_MS = 1400;
+const uint8_t EVENT_CONFIRM_SAMPLES = 3;
 
 // ============================================================
 // 4. ESTADO GLOBAL
@@ -228,8 +224,9 @@ bool leftOpen = false;
 // Pared frontal confirmada durante varias muestras.
 uint8_t frontWallStableCount = 0;
 
-// Confirmacion de que el giro ya encontro nuevamente la pared derecha.
-uint8_t turnLockCount = 0;
+// Confirmaciones temporales para cruces y fin de giro.
+uint8_t rightOpenStableCount = 0;
+uint8_t turnExitStableCount = 0;
 
 float errorPid = 0.0f;
 float prevErrorPid = 0.0f;
@@ -521,12 +518,11 @@ void updateAllSensors() {
   updateOneSensor(PIN_IR_SIDE_LEFT,   sLL);
   updateOneSensor(PIN_IR_SIDE_RIGHT,  sLR);
 
-  // STOP frontal segun la calibracion actual:
-  // ambos frontales deben confirmar ADC <= umbral.
-  // Asi una lectura aislada no alcanza para detener el robot.
+  // Sharp GP2Y0E03: en nuestra calibracion una pared cercana da ADC MAYOR.
+  // Exigimos ambos frontales para evitar el falso cercano de un solo sensor.
   bool frontCandidate =
-    (sFL.filtered <= cfg.frontWallAdc) &&
-    (sFR.filtered <= cfg.frontConfirmAdc);
+    (sFL.filtered >= cfg.frontWallAdc) &&
+    (sFR.filtered >= cfg.frontConfirmAdc);
 
   if (frontCandidate) {
     if (frontWallStableCount < 10) frontWallStableCount++;
@@ -534,11 +530,16 @@ void updateAllSensors() {
     frontWallStableCount = 0;
   }
 
-  // 3 lecturas consecutivas (~30 ms a 100 Hz).
-  frontBlocked = frontWallStableCount >= 3;
+  frontBlocked = frontWallStableCount >= EVENT_CONFIRM_SAMPLES;
 
   rightOpen = sLR.filtered < cfg.rightOpenAdc;
   leftOpen  = sLL.filtered < cfg.leftOpenAdc;
+
+  if (rightOpen) {
+    if (rightOpenStableCount < 10) rightOpenStableCount++;
+  } else {
+    rightOpenStableCount = 0;
+  }
 }
 
 // Valor frontal conservado para telemetria/aproximacion.
@@ -619,85 +620,17 @@ void followRightWall() {
 
 int calculateApproachPwm() {
   if (frontBlocked) return 0;
-  return constrain(cfg.basePwm, MAZE_FORWARD_MIN_PWM, MAZE_FORWARD_MAX_PWM);
+  return MAZE_FORWARD_PWM;
 }
 
-bool turnFrontClear() {
+bool turnFrontClearNow() {
   return
-    sFL.filtered > cfg.frontWallAdc &&
-    sFR.filtered > cfg.frontConfirmAdc;
+    sFL.filtered < cfg.frontWallAdc &&
+    sFR.filtered < cfg.frontConfirmAdc;
 }
 
-bool turnRightWallReady() {
+bool turnRightWallVisibleNow() {
   return sLR.filtered >= cfg.rightOpenAdc;
-}
-
-bool turnRightWallLocked() {
-  int error = abs((int)sLR.filtered - cfg.targetRightAdc);
-  return error <= TURN_WALL_LOCK_TOLERANCE_ADC;
-}
-
-void driveForcedPidTurn(bool turnRight) {
-  // Calcula el PID con objetivo extremo, pero usa el resultado SOLO
-  // para modular la intensidad entre 90 y 130 PWM.
-  int forcedTarget = turnRight ? 4095 : 0;
-
-  errorPid = (float)sLR.filtered - (float)forcedTarget;
-  derivativePid = errorPid - prevErrorPid;
-
-  float raw =
-      cfg.kp * errorPid +
-      cfg.kd * derivativePid;
-
-  int magnitude = MAZE_TURN_MIN_PWM +
-    (int)map(
-      (long)constrain((int)abs(raw), 0, 300),
-      0, 300,
-      0, MAZE_TURN_MAX_PWM - MAZE_TURN_MIN_PWM
-    );
-
-  magnitude = constrain(magnitude, MAZE_TURN_MIN_PWM, MAZE_TURN_MAX_PWM);
-
-  // Giro sobre el lugar, siempre limitado a 90..130.
-  if (turnRight) {
-    setDrive(+magnitude, -magnitude);
-  } else {
-    setDrive(-magnitude, +magnitude);
-  }
-
-  correctionPid = turnRight ? -(float)magnitude : (float)magnitude;
-  prevErrorPid = errorPid;
-}
-
-void driveTurnAlignmentPid() {
-  // Cerca del final del giro sigue usando el lateral derecho,
-  // pero mantiene la velocidad de giro dentro de 90..130.
-  errorPid = (float)sLR.filtered - (float)cfg.targetRightAdc;
-  derivativePid = errorPid - prevErrorPid;
-
-  float raw =
-      cfg.kp * errorPid +
-      cfg.kd * derivativePid;
-
-  int magnitude = MAZE_TURN_MIN_PWM +
-    (int)map(
-      (long)constrain((int)abs(raw), 0, 300),
-      0, 300,
-      0, MAZE_TURN_MAX_PWM - MAZE_TURN_MIN_PWM
-    );
-
-  magnitude = constrain(magnitude, MAZE_TURN_MIN_PWM, MAZE_TURN_MAX_PWM);
-
-  // Si esta demasiado cerca de la pared derecha, corrige a izquierda.
-  // Si esta demasiado lejos, corrige a derecha.
-  if (errorPid > 0) {
-    setDrive(-magnitude, +magnitude);
-  } else {
-    setDrive(+magnitude, -magnitude);
-  }
-
-  correctionPid = raw;
-  prevErrorPid = errorPid;
 }
 
 // ============================================================
@@ -707,11 +640,10 @@ void driveTurnAlignmentPid() {
 const char* stateName(RobotState s) {
   switch (s) {
     case STATE_FOLLOW:        return "PID PARED DERECHA";
-    case STATE_BRAKE:         return "FRENANDO / DECIDIENDO";
-    case STATE_DECISION_WAIT: return "ESPERANDO PARA GIRAR";
-    case STATE_TURN_RIGHT:    return "GIRO PID DERECHA";
-    case STATE_TURN_LEFT:     return "GIRO PID IZQUIERDA";
-    case STATE_UTURN:         return "GIRO PID 180";
+    case STATE_BRAKE:         return "DETENIDO / DECIDIENDO";
+    case STATE_DECISION_WAIT: return "ESPERA ANTES DE GIRAR";
+    case STATE_TURN_RIGHT:    return "GIRO DERECHA PWM 100";
+    case STATE_TURN_LEFT:     return "GIRO IZQUIERDA PWM 100";
     case STATE_STOPPED:
     default:                  return "DETENIDO";
   }
@@ -736,123 +668,143 @@ void enterState(RobotState newState) {
 void runMaze() {
   uint32_t now = millis();
 
-  auto runPidTurn = [&](bool turnRight, bool uTurn) {
-    uint32_t elapsed = now - stateStartMs;
-    uint32_t minMs = uTurn ? UTURN_PID_MIN_MS : TURN_PID_MIN_MS;
-
-    // Seguridad: si por sensores no logra resolver el giro, se detiene.
-    if (elapsed >= TURN_PID_TIMEOUT_MS) {
-      stopMotors();
-      running = false;
-      robotState = STATE_STOPPED;
-      turnLockCount = 0;
-      resetPid();
-      return;
-    }
-
-    bool canFinish =
-      elapsed >= minMs &&
-      turnFrontClear() &&
-      turnRightWallReady();
-
-    if (!canFinish) {
-      turnLockCount = 0;
-      driveForcedPidTurn(turnRight);
-      return;
-    }
-
-    // Cuando ya ve el nuevo pasillo, deja de forzar el sentido y usa
-    // el objetivo REAL del PID derecho para alinearse con la nueva pared.
-    driveTurnAlignmentPid();
-
-    if (turnRightWallLocked()) {
-      if (turnLockCount < TURN_LOCK_SAMPLES) turnLockCount++;
-    } else {
-      turnLockCount = 0;
-    }
-
-    if (turnLockCount >= TURN_LOCK_SAMPLES) {
-      stopMotors();
-      turnLockCount = 0;
-      pendingTurnState = STATE_STOPPED;
-      resetPid();
-      enterState(STATE_FOLLOW);
-    }
-  };
-
   switch (robotState) {
     case STATE_STOPPED:
       enterState(STATE_FOLLOW);
       break;
 
     case STATE_FOLLOW: {
-      // En avance normal SIEMPRE sigue/busca la pared derecha con PID.
-      if (frontBlocked) {
+      // Regla principal:
+      // 1) si aparece una apertura a la derecha, tomarla;
+      // 2) si hay pared frontal y derecha cerrada, girar a izquierda;
+      // 3) si no ocurre nada, seguir siempre la pared derecha por PID.
+      bool rightIntersection = rightOpenStableCount >= EVENT_CONFIRM_SAMPLES;
+
+      if (frontBlocked || rightIntersection) {
         stopMotors();
         enterState(STATE_BRAKE);
         break;
       }
 
-      followRightWallAtPwm(cfg.basePwm);
+      followRightWallAtPwm(MAZE_FORWARD_PWM);
       break;
     }
 
     case STATE_BRAKE:
       stopMotors();
 
+      // Primero deja que desaparezca la inercia.
       if (now - stateStartMs < BRAKE_SETTLE_MS) {
         break;
       }
 
-      // Regla pedida:
-      // - si NO hay pared derecha -> gira a derecha
-      // - si HAY pared derecha -> gira a izquierda
-      // Seguridad de callejon: si izquierda y derecha estan cerradas -> 180.
-      if (rightOpen) {
-        pendingTurnState = STATE_TURN_RIGHT;
-      } else if (leftOpen) {
-        pendingTurnState = STATE_TURN_LEFT;
-      } else {
-        pendingTurnState = STATE_UTURN;
-      }
-
+      // Prioridad derecha:
+      // si no hay pared derecha, gira a derecha.
+      // si hay pared derecha, gira a izquierda.
+      pendingTurnState = rightOpen ? STATE_TURN_RIGHT : STATE_TURN_LEFT;
       enterState(STATE_DECISION_WAIT);
       break;
 
     case STATE_DECISION_WAIT:
       stopMotors();
 
+      // Pausa visible antes del giro para estabilizar sensores.
       if (now - stateStartMs < (uint32_t)cfg.decisionWaitMs) {
         break;
       }
 
+      turnExitStableCount = 0;
       resetPid();
-      turnLockCount = 0;
+      enterState(pendingTurnState);
+      break;
 
-      if (
-        pendingTurnState == STATE_TURN_RIGHT ||
-        pendingTurnState == STATE_TURN_LEFT ||
-        pendingTurnState == STATE_UTURN
-      ) {
-        enterState(pendingTurnState);
+    case STATE_TURN_LEFT: {
+      uint32_t elapsed = now - stateStartMs;
+
+      if (elapsed >= TURN_TIMEOUT_MS) {
+        stopMotors();
+        running = false;
+        robotState = STATE_STOPPED;
+        turnExitStableCount = 0;
+        break;
+      }
+
+      // Giro lento y constante. No usa PID, encoder ni angulo por tiempo.
+      int turnPwm = constrain(cfg.turnPwm, 80, 120);
+      setDrive(-turnPwm, +turnPwm);
+
+      // Al girar a izquierda la pared frontal pasa a quedar a la derecha.
+      // Sale del giro cuando ambos frontales ven libre Y la pared derecha
+      // ya esta visible. En un callejon esto hace naturalmente un 180°.
+      bool ready =
+        elapsed >= TURN_MIN_LEFT_MS &&
+        turnFrontClearNow() &&
+        turnRightWallVisibleNow();
+
+      if (ready) {
+        if (turnExitStableCount < 10) turnExitStableCount++;
       } else {
+        turnExitStableCount = 0;
+      }
+
+      if (turnExitStableCount >= EVENT_CONFIRM_SAMPLES) {
+        stopMotors();
+        turnExitStableCount = 0;
+        rightOpenStableCount = 0;
+        resetPid();
         enterState(STATE_FOLLOW);
       }
       break;
+    }
 
-    case STATE_TURN_RIGHT:
-      runPidTurn(true, false);
-      break;
+    case STATE_TURN_RIGHT: {
+      uint32_t elapsed = now - stateStartMs;
 
-    case STATE_TURN_LEFT:
-      runPidTurn(false, false);
-      break;
+      if (elapsed >= TURN_TIMEOUT_MS) {
+        stopMotors();
+        running = false;
+        robotState = STATE_STOPPED;
+        turnExitStableCount = 0;
+        break;
+      }
 
-    case STATE_UTURN:
-      // En un callejon sin salida gira a derecha hasta que el frente quede
-      // libre y el lateral derecho vuelva al objetivo del PID.
-      runPidTurn(true, true);
+      int turnPwm = constrain(cfg.turnPwm, 80, 120);
+      setDrive(+turnPwm, -turnPwm);
+
+      // En una interseccion el frente ya puede estar libre desde el inicio,
+      // por eso ademas esperamos reencontrar una pared derecha.
+      bool ready =
+        elapsed >= TURN_MIN_RIGHT_MS &&
+        turnFrontClearNow() &&
+        turnRightWallVisibleNow();
+
+      if (ready) {
+        if (turnExitStableCount < 10) turnExitStableCount++;
+      } else {
+        turnExitStableCount = 0;
+      }
+
+      if (turnExitStableCount >= EVENT_CONFIRM_SAMPLES) {
+        stopMotors();
+        turnExitStableCount = 0;
+        rightOpenStableCount = 0;
+        resetPid();
+        enterState(STATE_FOLLOW);
+        break;
+      }
+
+      // Si el nuevo pasillo no tiene pared derecha inmediata, no quedarse
+      // girando indefinidamente: tras esta proteccion, si el frente esta libre,
+      // comienza a avanzar y el PID volvera a buscar pared derecha.
+      if (elapsed >= TURN_RIGHT_FALLBACK_MS && turnFrontClearNow()) {
+        stopMotors();
+        turnExitStableCount = 0;
+        rightOpenStableCount = 0;
+        resetPid();
+        enterState(STATE_FOLLOW);
+      }
       break;
+    }
   }
 }
 
@@ -6711,25 +6663,23 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Avance PID limitado entre PWM 140 y 165 (base 155). Al confirmar frontal ≤1750 se detiene a 0; los giros PID trabajan solamente entre PWM 90 y 130.
+          Siempre sigue la pared derecha por PID a velocidad base 155. Si pierde la pared derecha toma esa apertura. Si encuentra pared frontal con derecha cerrada, se detiene y gira a izquierda a PWM 100 hasta que el frente quede libre.
         </div>
       </div>
 
       <div class="card">
         <h2>Deteccion y frenado</h2>
-        <div class="field"><span>STOP frontal ADC (≤)</span><input class="cfg" id="frontSlowAdc" type="number" step="1"></div>
-        <div class="field"><span>STOP frontal principal (≤)</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
+        <div class="field"><span>Pared frontal ADC (≥)</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
         <div class="field"><span>Confirmacion segundo frontal ADC</span><input class="cfg" id="frontConfirmAdc" type="number" step="1"></div>
-        <div class="field"><span>PWM avance</span><input class="cfg" id="approachMinPwm" type="number" min="140" max="165" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
       </div>
 
       <div class="card">
-        <h2>Giros por PID</h2>
-        <div class="field"><span>PWM giro PID</span><input class="cfg" id="turnPwm" type="number" min="90" max="130" step="1"></div>
-        <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="3000" step="10"></div>
-        <div class="hint">No usa ticks ni un tiempo fijo para completar el ángulo. El PID fuerza el sentido del giro y, cuando el frente queda libre, se alinea otra vez con el objetivo de pared derecha.</div>
+        <h2>Giros básicos por sensores</h2>
+        <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="80" max="120" step="1"></div>
+        <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1000" step="10"></div>
+        <div class="hint">Giro nominal PWM 100. Izquierda: gira hasta ver frente libre y pared derecha. Derecha: toma una apertura y busca nuevamente pared derecha. No usa encoders.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6921,7 +6871,7 @@ function calculateTicksPerCm(){
 async function applyConfig(){
   const ids=[
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
-    'frontSlowAdc','frontWallAdc','frontConfirmAdc','approachMinPwm',
+    'frontWallAdc','frontConfirmAdc',
     'rightOpenAdc','leftOpenAdc','turnPwm',
     'decisionWaitMs'
   ];
@@ -7165,7 +7115,6 @@ void handleMode() {
   stopMotors();
   resetPid();
   frontWallStableCount = 0;
-  turnLockCount = 0;
 
   if (mode == "TEST") {
     activeMode = MODE_TEST;
@@ -7362,7 +7311,7 @@ void handleConfig() {
     cfg.leftOpenAdc = constrain(server.arg("leftOpenAdc").toInt(), 0, 4095);
 
   if (server.hasArg("turnPwm"))
-    cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), MAZE_TURN_MIN_PWM, MAZE_TURN_MAX_PWM);
+    cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), 80, 120);
 
   if (server.hasArg("turn90Ticks"))
     cfg.turn90Ticks = constrain(server.arg("turn90Ticks").toInt(), 1, 5000);
@@ -7402,7 +7351,6 @@ void handleStop() {
   encoderTestCompleted = false;
   stopMotors();
   resetPid();
-  turnLockCount = 0;
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "STOP");
 }
