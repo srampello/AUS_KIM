@@ -194,7 +194,6 @@ const int MAZE_FORWARD_MIN_PWM = 140;
 const int MAZE_FORWARD_MAX_PWM = 165;
 
 // Giros simples por sensores.
-const int MAZE_TURN_PWM = 100;
 const uint16_t TURN_MIN_LEFT_MS = 120;
 const uint16_t TURN_MIN_RIGHT_MS = 180;
 const uint16_t TURN_RIGHT_FALLBACK_MS = 700;
@@ -7115,6 +7114,8 @@ void handleMode() {
   stopMotors();
   resetPid();
   frontWallStableCount = 0;
+  rightOpenStableCount = 0;
+  turnExitStableCount = 0;
 
   if (mode == "TEST") {
     activeMode = MODE_TEST;
@@ -7158,6 +7159,8 @@ void handleRun() {
 
     if (activeMode == MODE_MAZE) {
       frontWallStableCount = 0;
+      rightOpenStableCount = 0;
+      turnExitStableCount = 0;
       enterState(STATE_FOLLOW);
     } else {
       robotState = STATE_FOLLOW;
@@ -7351,6 +7354,8 @@ void handleStop() {
   encoderTestCompleted = false;
   stopMotors();
   resetPid();
+  rightOpenStableCount = 0;
+  turnExitStableCount = 0;
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "STOP");
 }
