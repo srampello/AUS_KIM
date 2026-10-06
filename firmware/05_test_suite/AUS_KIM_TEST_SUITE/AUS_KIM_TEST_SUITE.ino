@@ -230,9 +230,6 @@ uint8_t rightOpenStableCount = 0;
 uint8_t leftOpenStableCount = 0;
 uint8_t rightWallAcquireStableCount = 0;
 
-// Direccion elegida para la maniobra que sigue al giro de 45°.
-RobotState lastTurnState = STATE_STOPPED;
-
 float errorPid = 0.0f;
 float prevErrorPid = 0.0f;
 float integralPid = 0.0f;
@@ -737,7 +734,6 @@ void runMaze() {
 
       if (now - stateStartMs >= (uint32_t)cfg.turn45Ms) {
         stopMotors();
-        lastTurnState = STATE_TURN_RIGHT;
         rightWallAcquireStableCount = 0;
         enterState(STATE_SEEK_RIGHT_WALL);
       }
@@ -748,7 +744,6 @@ void runMaze() {
 
       if (now - stateStartMs >= (uint32_t)cfg.turn45Ms) {
         stopMotors();
-        lastTurnState = STATE_TURN_LEFT;
         rightWallAcquireStableCount = 0;
         enterState(STATE_SEEK_RIGHT_WALL);
       }
@@ -803,7 +798,6 @@ void runMaze() {
       // Aproximadamente 180° = cuatro veces el giro calibrado de 45°.
       if (elapsed >= (uint32_t)cfg.turn45Ms * 4UL) {
         stopMotors();
-        lastTurnState = STATE_UTURN;
         rightWallAcquireStableCount = 0;
         enterState(STATE_SEEK_RIGHT_WALL);
         break;
@@ -7093,7 +7087,6 @@ void handleStatus() {
   json += "\"targetRightAdc\":" + String(cfg.targetRightAdc) + ",";
   json += "\"basePwm\":" + String(cfg.basePwm) + ",";
   json += "\"maxCorrection\":" + String(cfg.maxCorrection) + ",";
-  json += "\"frontSlowAdc\":" + String(cfg.frontSlowAdc) + ",";
   json += "\"frontWallAdc\":" + String(cfg.frontWallAdc) + ",";
   json += "\"frontConfirmAdc\":" + String(cfg.frontConfirmAdc) + ",";
   json += "\"approachMinPwm\":" + String(cfg.approachMinPwm) + ",";
@@ -7314,9 +7307,6 @@ void handleConfig() {
 
   if (server.hasArg("maxCorrection"))
     cfg.maxCorrection = constrain(server.arg("maxCorrection").toInt(), 0, 255);
-
-  if (server.hasArg("frontSlowAdc"))
-    cfg.frontSlowAdc = constrain(server.arg("frontSlowAdc").toInt(), 0, 4095);
 
   if (server.hasArg("frontWallAdc"))
     cfg.frontWallAdc = constrain(server.arg("frontWallAdc").toInt(), 0, 4095);
