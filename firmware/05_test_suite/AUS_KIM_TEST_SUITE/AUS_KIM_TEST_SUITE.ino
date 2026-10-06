@@ -120,6 +120,7 @@ enum EncoderTestAction : uint8_t {
 enum RobotState : uint8_t {
   STATE_STOPPED = 0,
   STATE_FOLLOW,
+  STATE_ADVANCE_RIGHT_ENTRY,
   STATE_BRAKE,
   STATE_DECISION_WAIT,
   STATE_TURN_RIGHT,
@@ -161,6 +162,10 @@ struct ControlConfig {
   // Valores de encoder conservados solo para la pestaña de calibracion.
   int turn90Ticks = 160;
   int turn180Ticks = 350;
+
+  // Al detectar una apertura derecha, sigue recto hasta centrar el robot
+  // en la interseccion. Solo se usa el promedio de encoders como odometro.
+  int rightAdvanceTicks = 300;
 
   // Pausa detenido luego de decidir y antes de comenzar el giro.
   int decisionWaitMs = 250;
@@ -638,11 +643,12 @@ bool turnRightWallVisibleNow() {
 
 const char* stateName(RobotState s) {
   switch (s) {
-    case STATE_FOLLOW:        return "PID PARED DERECHA";
-    case STATE_BRAKE:         return "DETENIDO / DECIDIENDO";
-    case STATE_DECISION_WAIT: return "ESPERA ANTES DE GIRAR";
-    case STATE_TURN_RIGHT:    return "GIRO DERECHA PWM 100";
-    case STATE_TURN_LEFT:     return "GIRO IZQUIERDA PWM 100";
+    case STATE_FOLLOW:             return "PID PARED DERECHA";
+    case STATE_ADVANCE_RIGHT_ENTRY: return "CENTRANDO INTERSECCION";
+    case STATE_BRAKE:              return "DETENIDO / DECIDIENDO";
+    case STATE_DECISION_WAIT:      return "ESPERA ANTES DE GIRAR";
+    case STATE_TURN_RIGHT:         return "GIRO DERECHA PWM 155";
+    case STATE_TURN_LEFT:          return "GIRO IZQUIERDA PWM 155";
     case STATE_STOPPED:
     default:                  return "DETENIDO";
   }
@@ -673,19 +679,49 @@ void runMaze() {
       break;
 
     case STATE_FOLLOW: {
-      // Regla principal:
-      // 1) si aparece una apertura a la derecha, tomarla;
-      // 2) si hay pared frontal y derecha cerrada, girar a izquierda;
-      // 3) si no ocurre nada, seguir siempre la pared derecha por PID.
-      bool rightIntersection = rightOpenStableCount >= EVENT_CONFIRM_SAMPLES;
-
-      if (frontBlocked || rightIntersection) {
+      // Pared frontal tiene prioridad de seguridad.
+      if (frontBlocked) {
         stopMotors();
         enterState(STATE_BRAKE);
         break;
       }
 
+      // El lateral derecho ve la apertura ANTES de que el robot llegue
+      // al centro de la interseccion. No giramos todavia.
+      if (rightOpenStableCount >= EVENT_CONFIRM_SAMPLES) {
+        captureMoveStart();
+        rightOpenStableCount = 0;
+        enterState(STATE_ADVANCE_RIGHT_ENTRY);
+        break;
+      }
+
       followRightWallAtPwm(MAZE_FORWARD_PWM);
+      break;
+    }
+
+    case STATE_ADVANCE_RIGHT_ENTRY: {
+      // Si aparece una pared frontal durante el avance de centrado,
+      // se detiene inmediatamente y toma la salida derecha.
+      if (frontBlocked) {
+        stopMotors();
+        pendingTurnState = STATE_TURN_RIGHT;
+        enterState(STATE_DECISION_WAIT);
+        break;
+      }
+
+      uint32_t forwardTicks = getMoveTicksAverage();
+
+      if (forwardTicks >= (uint32_t)cfg.rightAdvanceTicks) {
+        stopMotors();
+        pendingTurnState = STATE_TURN_RIGHT;
+        rightOpenStableCount = 0;
+        enterState(STATE_DECISION_WAIT);
+        break;
+      }
+
+      // Durante estos pocos centimetros NO usamos el PID lateral porque
+      // justamente la pared derecha desaparecio. Avanza recto a 155.
+      setDrive(MAZE_FORWARD_PWM, MAZE_FORWARD_PWM);
       break;
     }
 
@@ -6662,7 +6698,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre sigue la pared derecha por PID a velocidad base 155. Si pierde la pared derecha toma esa apertura. Si encuentra pared frontal con derecha cerrada, se detiene y gira a izquierda a PWM 155 hasta que el frente quede libre.
+          Siempre sigue la pared derecha por PID a 155. Si pierde la pared derecha, avanza recto unos 300 ticks hasta el centro de la intersección y gira a derecha. Si encuentra pared frontal con derecha cerrada, gira a izquierda.
         </div>
       </div>
 
@@ -6677,8 +6713,9 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
       <div class="card">
         <h2>Giros básicos por sensores</h2>
         <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="155" max="155" step="1"></div>
+        <div class="field"><span>Avance al centro derecha (ticks)</span><input class="cfg" id="rightAdvanceTicks" type="number" min="0" max="1500" step="10"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1000" step="10"></div>
-        <div class="hint">Giro nominal PWM 155, igual que el avance. Izquierda: gira hasta ver frente libre y pared derecha. Derecha: toma una apertura y busca nuevamente pared derecha. No usa encoders.</div>
+        <div class="hint">Giro nominal PWM 155. Al detectar una apertura derecha, avanza primero unos 300 ticks promedio para llegar al centro de la intersección y recién después gira. Los encoders solo se usan como odómetro en ese avance.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6872,7 +6909,7 @@ async function applyConfig(){
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
     'rightOpenAdc','leftOpenAdc','turnPwm',
-    'decisionWaitMs'
+    'rightAdvanceTicks','decisionWaitMs'
   ];
 
   const p=new URLSearchParams();
@@ -7086,6 +7123,7 @@ void handleStatus() {
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
+  json += "\"rightAdvanceTicks\":" + String(cfg.rightAdvanceTicks) + ",";
   json += "\"turn90Ticks\":" + String(cfg.turn90Ticks) + ",";
   json += "\"turn180Ticks\":" + String(cfg.turn180Ticks) + ",";
   json += "\"decisionWaitMs\":" + String(cfg.decisionWaitMs) + ",";
@@ -7315,6 +7353,9 @@ void handleConfig() {
 
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = 155;
+
+  if (server.hasArg("rightAdvanceTicks"))
+    cfg.rightAdvanceTicks = constrain(server.arg("rightAdvanceTicks").toInt(), 0, 1500);
 
   if (server.hasArg("turn90Ticks"))
     cfg.turn90Ticks = constrain(server.arg("turn90Ticks").toInt(), 1, 5000);
