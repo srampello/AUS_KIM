@@ -163,9 +163,13 @@ struct ControlConfig {
   int turn90Ticks = 160;
   int turn180Ticks = 350;
 
-  // Al detectar una apertura derecha, sigue recto hasta centrar el robot
-  // en la interseccion. Solo se usa el promedio de encoders como odometro.
-  int rightAdvanceTicks = 300;
+  // Centro de interseccion derecha:
+  // despues de ver pared -> hueco, espera a volver a ver la nueva pared.
+  int rightCenterAdc = 2300;
+  int frontCenterAdc = 2300;
+
+  // Los encoders quedan solo como limite de seguridad, no como punto de giro.
+  int rightAdvanceTicks = 500;
 
   // Pausa detenido luego de decidir y antes de comenzar el giro.
   int decisionWaitMs = 250;
@@ -230,6 +234,7 @@ uint8_t frontWallStableCount = 0;
 
 // Confirmaciones temporales para cruces y fin de giro.
 uint8_t rightOpenStableCount = 0;
+uint8_t rightReacquireStableCount = 0;
 uint8_t turnExitStableCount = 0;
 
 float errorPid = 0.0f;
@@ -691,6 +696,7 @@ void runMaze() {
       if (rightOpenStableCount >= EVENT_CONFIRM_SAMPLES) {
         captureMoveStart();
         rightOpenStableCount = 0;
+        rightReacquireStableCount = 0;
         enterState(STATE_ADVANCE_RIGHT_ENTRY);
         break;
       }
@@ -700,27 +706,48 @@ void runMaze() {
     }
 
     case STATE_ADVANCE_RIGHT_ENTRY: {
-      // Si aparece una pared frontal durante el avance de centrado,
-      // se detiene inmediatamente y toma la salida derecha.
-      if (frontBlocked) {
+      uint32_t forwardTicks = getMoveTicksAverage();
+
+      // Secuencia geometrica buscada:
+      // pared derecha -> hueco -> vuelve a aparecer pared derecha.
+      // La nueva pared se considera adquirida cerca de 2300 ADC.
+      bool rightWallReacquired = sLR.filtered >= cfg.rightCenterAdc;
+
+      // En esta interseccion el centro tambien coincide aproximadamente
+      // con lectura frontal cercana a 2300. Usamos el frontal que vea
+      // la pared mas claramente.
+      uint16_t frontNow = max(sFL.filtered, sFR.filtered);
+      bool frontAtCenter = frontNow >= cfg.frontCenterAdc;
+
+      if (rightWallReacquired && frontAtCenter) {
+        if (rightReacquireStableCount < 10) rightReacquireStableCount++;
+      } else {
+        rightReacquireStableCount = 0;
+      }
+
+      // Recién ahora estamos suficientemente dentro de la interseccion.
+      if (rightReacquireStableCount >= EVENT_CONFIRM_SAMPLES) {
         stopMotors();
         pendingTurnState = STATE_TURN_RIGHT;
+        rightOpenStableCount = 0;
+        rightReacquireStableCount = 0;
         enterState(STATE_DECISION_WAIT);
         break;
       }
 
-      uint32_t forwardTicks = getMoveTicksAverage();
-
+      // Seguridad: si por geometria/ruido no aparece la nueva pared,
+      // no seguir avanzando indefinidamente.
       if (forwardTicks >= (uint32_t)cfg.rightAdvanceTicks) {
         stopMotors();
         pendingTurnState = STATE_TURN_RIGHT;
         rightOpenStableCount = 0;
+        rightReacquireStableCount = 0;
         enterState(STATE_DECISION_WAIT);
         break;
       }
 
-      // Durante estos pocos centimetros NO usamos el PID lateral porque
-      // justamente la pared derecha desaparecio. Avanza recto a 155.
+      // Durante el hueco no usamos PID derecho, porque intentaria doblar
+      // hacia la apertura antes de llegar al centro. Avance recto a 155.
       setDrive(MAZE_FORWARD_PWM, MAZE_FORWARD_PWM);
       break;
     }
@@ -6698,7 +6725,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre sigue la pared derecha por PID a 155. Si pierde la pared derecha, avanza recto unos 300 ticks hasta el centro de la intersección y gira a derecha. Si encuentra pared frontal con derecha cerrada, gira a izquierda.
+          Siempre sigue la pared derecha por PID a 155. Si pierde la pared derecha, no gira enseguida: cruza el hueco hasta volver a ver la nueva pared derecha (~2300 ADC) y usa el frontal (~2300 ADC) como referencia de centro; recién ahí gira a derecha.
         </div>
       </div>
 
@@ -6713,9 +6740,11 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
       <div class="card">
         <h2>Giros básicos por sensores</h2>
         <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="155" max="155" step="1"></div>
-        <div class="field"><span>Avance al centro derecha (ticks)</span><input class="cfg" id="rightAdvanceTicks" type="number" min="0" max="1500" step="10"></div>
+        <div class="field"><span>Nueva pared derecha ADC</span><input class="cfg" id="rightCenterAdc" type="number" min="0" max="4095" step="10"></div>
+        <div class="field"><span>Frontal en centro ADC</span><input class="cfg" id="frontCenterAdc" type="number" min="0" max="4095" step="10"></div>
+        <div class="field"><span>Máximo avance de seguridad (ticks)</span><input class="cfg" id="rightAdvanceTicks" type="number" min="0" max="1500" step="10"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1000" step="10"></div>
-        <div class="hint">Giro nominal PWM 155. Al detectar una apertura derecha, avanza primero unos 300 ticks promedio para llegar al centro de la intersección y recién después gira. Los encoders solo se usan como odómetro en ese avance.</div>
+        <div class="hint">Giro nominal PWM 155. En una apertura derecha espera la secuencia pared → hueco → nueva pared: cuando el lateral derecho y el frontal rondan 2300 ADC considera que llegó al centro y recién entonces gira. Los ticks quedan solo como seguridad.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6909,7 +6938,7 @@ async function applyConfig(){
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
     'rightOpenAdc','leftOpenAdc','turnPwm',
-    'rightAdvanceTicks','decisionWaitMs'
+    'rightCenterAdc','frontCenterAdc','rightAdvanceTicks','decisionWaitMs'
   ];
 
   const p=new URLSearchParams();
@@ -7123,6 +7152,8 @@ void handleStatus() {
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
+  json += "\"rightCenterAdc\":" + String(cfg.rightCenterAdc) + ",";
+  json += "\"frontCenterAdc\":" + String(cfg.frontCenterAdc) + ",";
   json += "\"rightAdvanceTicks\":" + String(cfg.rightAdvanceTicks) + ",";
   json += "\"turn90Ticks\":" + String(cfg.turn90Ticks) + ",";
   json += "\"turn180Ticks\":" + String(cfg.turn180Ticks) + ",";
@@ -7153,6 +7184,7 @@ void handleMode() {
   resetPid();
   frontWallStableCount = 0;
   rightOpenStableCount = 0;
+  rightReacquireStableCount = 0;
   turnExitStableCount = 0;
 
   if (mode == "TEST") {
@@ -7198,6 +7230,7 @@ void handleRun() {
     if (activeMode == MODE_MAZE) {
       frontWallStableCount = 0;
       rightOpenStableCount = 0;
+      rightReacquireStableCount = 0;
       turnExitStableCount = 0;
       enterState(STATE_FOLLOW);
     } else {
@@ -7354,6 +7387,12 @@ void handleConfig() {
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = 155;
 
+  if (server.hasArg("rightCenterAdc"))
+    cfg.rightCenterAdc = constrain(server.arg("rightCenterAdc").toInt(), 0, 4095);
+
+  if (server.hasArg("frontCenterAdc"))
+    cfg.frontCenterAdc = constrain(server.arg("frontCenterAdc").toInt(), 0, 4095);
+
   if (server.hasArg("rightAdvanceTicks"))
     cfg.rightAdvanceTicks = constrain(server.arg("rightAdvanceTicks").toInt(), 0, 1500);
 
@@ -7396,6 +7435,7 @@ void handleStop() {
   stopMotors();
   resetPid();
   rightOpenStableCount = 0;
+  rightReacquireStableCount = 0;
   turnExitStableCount = 0;
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "STOP");
