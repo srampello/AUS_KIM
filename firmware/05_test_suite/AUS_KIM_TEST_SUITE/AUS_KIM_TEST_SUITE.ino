@@ -146,11 +146,12 @@ struct ControlConfig {
   // Deteccion de laberinto
   // frontSlowAdc: comienza a desacelerar.
   // frontWallAdc: STOP completo y decision.
-  int frontSlowAdc = 1750; // legacy
-  int frontWallAdc = 1750;
+  int frontSlowAdc = 2300; // legacy
+  int frontWallAdc = 2300;
 
-  // Sharp: cerca = ADC mayor. Ambos frontales deben confirmar pared.
-  int frontConfirmAdc = 1750;
+  // Centro/pared frontal segun calibracion actual.
+  // Sharp: cerca = ADC mayor. Ambos frontales deben confirmar.
+  int frontConfirmAdc = 2300;
 
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
@@ -6725,7 +6726,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre sigue la pared derecha por PID a 155. Si pierde la pared derecha, no gira enseguida: cruza el hueco hasta volver a ver la nueva pared derecha (~2300 ADC) y usa el frontal (~2300 ADC) como referencia de centro; recién ahí gira a derecha.
+          Siempre sigue la pared derecha por PID a 155. Apertura lateral: <1750 ADC. Centro de intersección: frontal ≈2300 y nueva pared derecha ≈2300. Recién en ese punto gira a derecha.
         </div>
       </div>
 
