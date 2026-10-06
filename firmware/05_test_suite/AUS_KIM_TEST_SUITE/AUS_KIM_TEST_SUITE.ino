@@ -120,11 +120,12 @@ enum EncoderTestAction : uint8_t {
 enum RobotState : uint8_t {
   STATE_STOPPED = 0,
   STATE_FOLLOW,
-  STATE_ADVANCE_RIGHT_ENTRY,
   STATE_BRAKE,
   STATE_DECISION_WAIT,
   STATE_TURN_RIGHT,
-  STATE_TURN_LEFT
+  STATE_TURN_LEFT,
+  STATE_SEEK_RIGHT_WALL,
+  STATE_UTURN
 };
 
 struct SensorData {
@@ -143,36 +144,29 @@ struct ControlConfig {
   int basePwm = 155;
   int maxCorrection = 60;
 
-  // Deteccion de laberinto
-  // frontSlowAdc: comienza a desacelerar.
-  // frontWallAdc: STOP completo y decision.
-  int frontSlowAdc = 2300; // legacy
-  int frontWallAdc = 2300;
+  // STOP frontal: se detiene antes para tener lugar fisico de giro.
+  // Sharp: pared cercana = ADC mayor.
+  int frontWallAdc = 1650;
+  int frontConfirmAdc = 1650;
 
-  // Centro/pared frontal segun calibracion actual.
-  // Sharp: cerca = ADC mayor. Ambos frontales deben confirmar.
-  int frontConfirmAdc = 2300;
-
+  // Aperturas laterales.
   int rightOpenAdc = 1750;
   int leftOpenAdc = 1750;
-  int approachMinPwm = 140; // legacy
 
-  // Giro simple sobre el lugar, misma velocidad que avance.
+  // Seguimiento/giro.
+  int approachMinPwm = 140; // legacy
   int turnPwm = 155;
+  int turn45Ms = 165;
+
+  // Al avanzar luego del giro de 45°, cuando el lateral derecho vuelve
+  // a una lectura util el PID retoma el control.
+  int rightAcquireAdc = 1900;
 
   // Valores de encoder conservados solo para la pestaña de calibracion.
   int turn90Ticks = 160;
   int turn180Ticks = 350;
 
-  // Centro de interseccion derecha:
-  // despues de ver pared -> hueco, espera a volver a ver la nueva pared.
-  int rightCenterAdc = 2300;
-  int frontCenterAdc = 2300;
-
-  // Los encoders quedan solo como limite de seguridad, no como punto de giro.
-  int rightAdvanceTicks = 500;
-
-  // Pausa detenido luego de decidir y antes de comenzar el giro.
+  // Pausa detenido luego de llegar a la pared.
   int decisionWaitMs = 250;
 
   // Prueba manual
@@ -198,16 +192,14 @@ const int MIN_MOVING_PWM = 155;
 // Pausa mecanica tras frenar frente a una pared.
 const uint16_t BRAKE_SETTLE_MS = 100;
 
-// Avance normal: base 155 con margen pequeno para que el PID corrija.
+// Avance normal por PID.
 const int MAZE_FORWARD_PWM = 155;
 const int MAZE_FORWARD_MIN_PWM = 140;
 const int MAZE_FORWARD_MAX_PWM = 165;
 
-// Giros simples por sensores.
-const uint16_t TURN_MIN_LEFT_MS = 120;
-const uint16_t TURN_MIN_RIGHT_MS = 180;
-const uint16_t TURN_RIGHT_FALLBACK_MS = 700;
-const uint16_t TURN_TIMEOUT_MS = 1400;
+// Seguridad de las maniobras por sensores.
+const uint16_t SEEK_WALL_TIMEOUT_MS = 1200;
+const uint16_t UTURN_TIMEOUT_MS = 1800;
 const uint8_t EVENT_CONFIRM_SAMPLES = 3;
 
 // ============================================================
@@ -233,10 +225,13 @@ bool leftOpen = false;
 // Pared frontal confirmada durante varias muestras.
 uint8_t frontWallStableCount = 0;
 
-// Confirmaciones temporales para cruces y fin de giro.
+// Confirmaciones temporales para decisiones y reacquisicion de pared.
 uint8_t rightOpenStableCount = 0;
-uint8_t rightReacquireStableCount = 0;
-uint8_t turnExitStableCount = 0;
+uint8_t leftOpenStableCount = 0;
+uint8_t rightWallAcquireStableCount = 0;
+
+// Direccion elegida para la maniobra que sigue al giro de 45°.
+RobotState lastTurnState = STATE_STOPPED;
 
 float errorPid = 0.0f;
 float prevErrorPid = 0.0f;
@@ -550,6 +545,12 @@ void updateAllSensors() {
   } else {
     rightOpenStableCount = 0;
   }
+
+  if (leftOpen) {
+    if (leftOpenStableCount < 10) leftOpenStableCount++;
+  } else {
+    leftOpenStableCount = 0;
+  }
 }
 
 // Valor frontal conservado para telemetria/aproximacion.
@@ -633,14 +634,8 @@ int calculateApproachPwm() {
   return MAZE_FORWARD_PWM;
 }
 
-bool turnFrontClearNow() {
-  return
-    sFL.filtered < cfg.frontWallAdc &&
-    sFR.filtered < cfg.frontConfirmAdc;
-}
-
-bool turnRightWallVisibleNow() {
-  return sLR.filtered >= cfg.rightOpenAdc;
+bool rightWallAcquiredNow() {
+  return sLR.filtered >= cfg.rightAcquireAdc;
 }
 
 // ============================================================
@@ -649,14 +644,15 @@ bool turnRightWallVisibleNow() {
 
 const char* stateName(RobotState s) {
   switch (s) {
-    case STATE_FOLLOW:             return "PID PARED DERECHA";
-    case STATE_ADVANCE_RIGHT_ENTRY: return "CENTRANDO INTERSECCION";
-    case STATE_BRAKE:              return "DETENIDO / DECIDIENDO";
-    case STATE_DECISION_WAIT:      return "ESPERA ANTES DE GIRAR";
-    case STATE_TURN_RIGHT:         return "GIRO DERECHA PWM 155";
-    case STATE_TURN_LEFT:          return "GIRO IZQUIERDA PWM 155";
+    case STATE_FOLLOW:          return "PID PARED DERECHA";
+    case STATE_BRAKE:           return "DETENIDO / LEYENDO SALIDAS";
+    case STATE_DECISION_WAIT:   return "ESPERA ANTES DE GIRAR";
+    case STATE_TURN_RIGHT:      return "GIRO 45 DERECHA";
+    case STATE_TURN_LEFT:       return "GIRO 45 IZQUIERDA";
+    case STATE_SEEK_RIGHT_WALL: return "ENTRANDO / BUSCANDO PARED DERECHA";
+    case STATE_UTURN:           return "MEDIA VUELTA";
     case STATE_STOPPED:
-    default:                  return "DETENIDO";
+    default:                    return "DETENIDO";
   }
 }
 
@@ -684,187 +680,139 @@ void runMaze() {
       enterState(STATE_FOLLOW);
       break;
 
-    case STATE_FOLLOW: {
-      // Pared frontal tiene prioridad de seguridad.
+    case STATE_FOLLOW:
+      // Mientras el frente este libre, SIEMPRE sigue la pared derecha.
+      // Las aperturas laterales no disparan maniobras por si solas.
       if (frontBlocked) {
         stopMotors();
         enterState(STATE_BRAKE);
         break;
       }
 
-      // El lateral derecho ve la apertura ANTES de que el robot llegue
-      // al centro de la interseccion. No giramos todavia.
-      if (rightOpenStableCount >= EVENT_CONFIRM_SAMPLES) {
-        captureMoveStart();
-        rightOpenStableCount = 0;
-        rightReacquireStableCount = 0;
-        enterState(STATE_ADVANCE_RIGHT_ENTRY);
-        break;
-      }
-
       followRightWallAtPwm(MAZE_FORWARD_PWM);
       break;
-    }
-
-    case STATE_ADVANCE_RIGHT_ENTRY: {
-      uint32_t forwardTicks = getMoveTicksAverage();
-
-      // Secuencia geometrica buscada:
-      // pared derecha -> hueco -> vuelve a aparecer pared derecha.
-      // La nueva pared se considera adquirida cerca de 2300 ADC.
-      bool rightWallReacquired = sLR.filtered >= cfg.rightCenterAdc;
-
-      // En esta interseccion el centro tambien coincide aproximadamente
-      // con lectura frontal cercana a 2300. Usamos el frontal que vea
-      // la pared mas claramente.
-      uint16_t frontNow = max(sFL.filtered, sFR.filtered);
-      bool frontAtCenter = frontNow >= cfg.frontCenterAdc;
-
-      if (rightWallReacquired && frontAtCenter) {
-        if (rightReacquireStableCount < 10) rightReacquireStableCount++;
-      } else {
-        rightReacquireStableCount = 0;
-      }
-
-      // Recién ahora estamos suficientemente dentro de la interseccion.
-      if (rightReacquireStableCount >= EVENT_CONFIRM_SAMPLES) {
-        stopMotors();
-        pendingTurnState = STATE_TURN_RIGHT;
-        rightOpenStableCount = 0;
-        rightReacquireStableCount = 0;
-        enterState(STATE_DECISION_WAIT);
-        break;
-      }
-
-      // Seguridad: si por geometria/ruido no aparece la nueva pared,
-      // no seguir avanzando indefinidamente.
-      if (forwardTicks >= (uint32_t)cfg.rightAdvanceTicks) {
-        stopMotors();
-        pendingTurnState = STATE_TURN_RIGHT;
-        rightOpenStableCount = 0;
-        rightReacquireStableCount = 0;
-        enterState(STATE_DECISION_WAIT);
-        break;
-      }
-
-      // Durante el hueco no usamos PID derecho, porque intentaria doblar
-      // hacia la apertura antes de llegar al centro. Avance recto a 155.
-      setDrive(MAZE_FORWARD_PWM, MAZE_FORWARD_PWM);
-      break;
-    }
 
     case STATE_BRAKE:
       stopMotors();
 
-      // Primero deja que desaparezca la inercia.
+      // Deja que se vaya la inercia y que los laterales queden estables.
       if (now - stateStartMs < BRAKE_SETTLE_MS) {
         break;
       }
 
-      // Prioridad derecha:
-      // si no hay pared derecha, gira a derecha.
-      // si hay pared derecha, gira a izquierda.
-      pendingTurnState = rightOpen ? STATE_TURN_RIGHT : STATE_TURN_LEFT;
+      {
+        bool exitRight = rightOpenStableCount >= EVENT_CONFIRM_SAMPLES;
+        bool exitLeft  = leftOpenStableCount >= EVENT_CONFIRM_SAMPLES;
+
+        // Prioridad mano derecha.
+        if (exitRight) {
+          pendingTurnState = STATE_TURN_RIGHT;
+        } else if (exitLeft) {
+          pendingTurnState = STATE_TURN_LEFT;
+        } else {
+          // Frente + izquierda + derecha cerrados = callejon sin salida.
+          pendingTurnState = STATE_UTURN;
+        }
+      }
+
       enterState(STATE_DECISION_WAIT);
       break;
 
     case STATE_DECISION_WAIT:
       stopMotors();
 
-      // Pausa visible antes del giro para estabilizar sensores.
       if (now - stateStartMs < (uint32_t)cfg.decisionWaitMs) {
         break;
       }
 
-      turnExitStableCount = 0;
+      rightWallAcquireStableCount = 0;
       resetPid();
       enterState(pendingTurnState);
       break;
 
-    case STATE_TURN_LEFT: {
+    case STATE_TURN_RIGHT:
+      // Solo un giro inicial aproximado de 45°. El alineado final lo hace
+      // el sensor derecho + PID mientras entra a la nueva calle.
+      setDrive(+cfg.turnPwm, -cfg.turnPwm);
+
+      if (now - stateStartMs >= (uint32_t)cfg.turn45Ms) {
+        stopMotors();
+        lastTurnState = STATE_TURN_RIGHT;
+        rightWallAcquireStableCount = 0;
+        enterState(STATE_SEEK_RIGHT_WALL);
+      }
+      break;
+
+    case STATE_TURN_LEFT:
+      setDrive(-cfg.turnPwm, +cfg.turnPwm);
+
+      if (now - stateStartMs >= (uint32_t)cfg.turn45Ms) {
+        stopMotors();
+        lastTurnState = STATE_TURN_LEFT;
+        rightWallAcquireStableCount = 0;
+        enterState(STATE_SEEK_RIGHT_WALL);
+      }
+      break;
+
+    case STATE_SEEK_RIGHT_WALL: {
       uint32_t elapsed = now - stateStartMs;
 
-      if (elapsed >= TURN_TIMEOUT_MS) {
+      // Si el giro/entrada quedo mal y aparece otra pared frontal,
+      // detener y volver a decidir en lugar de chocar.
+      if (frontBlocked) {
         stopMotors();
-        running = false;
-        robotState = STATE_STOPPED;
-        turnExitStableCount = 0;
+        rightWallAcquireStableCount = 0;
+        enterState(STATE_BRAKE);
         break;
       }
 
-      // Giro lento y constante. No usa PID, encoder ni angulo por tiempo.
-      int turnPwm = 155;
-      setDrive(-turnPwm, +turnPwm);
+      // Avanza hacia la apertura. El giro de 45° ya lo orienta hacia ella.
+      setDrive(MAZE_FORWARD_PWM, MAZE_FORWARD_PWM);
 
-      // Al girar a izquierda la pared frontal pasa a quedar a la derecha.
-      // Sale del giro cuando ambos frontales ven libre Y la pared derecha
-      // ya esta visible. En un callejon esto hace naturalmente un 180°.
-      bool ready =
-        elapsed >= TURN_MIN_LEFT_MS &&
-        turnFrontClearNow() &&
-        turnRightWallVisibleNow();
-
-      if (ready) {
-        if (turnExitStableCount < 10) turnExitStableCount++;
+      if (rightWallAcquiredNow()) {
+        if (rightWallAcquireStableCount < 10) rightWallAcquireStableCount++;
       } else {
-        turnExitStableCount = 0;
+        rightWallAcquireStableCount = 0;
       }
 
-      if (turnExitStableCount >= EVENT_CONFIRM_SAMPLES) {
-        stopMotors();
-        turnExitStableCount = 0;
-        rightOpenStableCount = 0;
+      // En cuanto el sensor derecho vuelve a tener una pared util,
+      // entrega el robot al PID para que termine de alinearlo.
+      if (rightWallAcquireStableCount >= EVENT_CONFIRM_SAMPLES) {
+        rightWallAcquireStableCount = 0;
+        resetPid();
+        enterState(STATE_FOLLOW);
+        break;
+      }
+
+      // Si el pasillo es muy abierto, no quedarse eternamente en este estado:
+      // vuelve al PID, que seguira buscando pared derecha.
+      if (elapsed >= SEEK_WALL_TIMEOUT_MS) {
+        rightWallAcquireStableCount = 0;
         resetPid();
         enterState(STATE_FOLLOW);
       }
       break;
     }
 
-    case STATE_TURN_RIGHT: {
+    case STATE_UTURN: {
       uint32_t elapsed = now - stateStartMs;
 
-      if (elapsed >= TURN_TIMEOUT_MS) {
+      // Callejon sin salida: media vuelta a izquierda.
+      setDrive(-cfg.turnPwm, +cfg.turnPwm);
+
+      // Aproximadamente 180° = cuatro veces el giro calibrado de 45°.
+      if (elapsed >= (uint32_t)cfg.turn45Ms * 4UL) {
+        stopMotors();
+        lastTurnState = STATE_UTURN;
+        rightWallAcquireStableCount = 0;
+        enterState(STATE_SEEK_RIGHT_WALL);
+        break;
+      }
+
+      if (elapsed >= UTURN_TIMEOUT_MS) {
         stopMotors();
         running = false;
         robotState = STATE_STOPPED;
-        turnExitStableCount = 0;
-        break;
-      }
-
-      int turnPwm = 155;
-      setDrive(+turnPwm, -turnPwm);
-
-      // En una interseccion el frente ya puede estar libre desde el inicio,
-      // por eso ademas esperamos reencontrar una pared derecha.
-      bool ready =
-        elapsed >= TURN_MIN_RIGHT_MS &&
-        turnFrontClearNow() &&
-        turnRightWallVisibleNow();
-
-      if (ready) {
-        if (turnExitStableCount < 10) turnExitStableCount++;
-      } else {
-        turnExitStableCount = 0;
-      }
-
-      if (turnExitStableCount >= EVENT_CONFIRM_SAMPLES) {
-        stopMotors();
-        turnExitStableCount = 0;
-        rightOpenStableCount = 0;
-        resetPid();
-        enterState(STATE_FOLLOW);
-        break;
-      }
-
-      // Si el nuevo pasillo no tiene pared derecha inmediata, no quedarse
-      // girando indefinidamente: tras esta proteccion, si el frente esta libre,
-      // comienza a avanzar y el PID volvera a buscar pared derecha.
-      if (elapsed >= TURN_RIGHT_FALLBACK_MS && turnFrontClearNow()) {
-        stopMotors();
-        turnExitStableCount = 0;
-        rightOpenStableCount = 0;
-        resetPid();
-        enterState(STATE_FOLLOW);
       }
       break;
     }
@@ -6726,13 +6674,13 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre sigue la pared derecha por PID a 155. Apertura lateral: <1750 ADC. Centro de intersección: frontal ≈2300 y nueva pared derecha ≈2300. Recién en ese punto gira a derecha.
+          Siempre avanza con PID de pared derecha a 155. Solo decide al llegar a una pared frontal (1650): derecha libre → 45° derecha; si no, izquierda libre → 45° izquierda; si ambos lados están cerrados → media vuelta.
         </div>
       </div>
 
       <div class="card">
         <h2>Deteccion y frenado</h2>
-        <div class="field"><span>Pared frontal ADC (≥)</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
+        <div class="field"><span>STOP frontal ADC (≥)</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
         <div class="field"><span>Confirmacion segundo frontal ADC</span><input class="cfg" id="frontConfirmAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
@@ -6741,11 +6689,10 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
       <div class="card">
         <h2>Giros básicos por sensores</h2>
         <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="155" max="155" step="1"></div>
-        <div class="field"><span>Nueva pared derecha ADC</span><input class="cfg" id="rightCenterAdc" type="number" min="0" max="4095" step="10"></div>
-        <div class="field"><span>Frontal en centro ADC</span><input class="cfg" id="frontCenterAdc" type="number" min="0" max="4095" step="10"></div>
-        <div class="field"><span>Máximo avance de seguridad (ticks)</span><input class="cfg" id="rightAdvanceTicks" type="number" min="0" max="1500" step="10"></div>
+        <div class="field"><span>Tiempo giro 45° ms</span><input class="cfg" id="turn45Ms" type="number" min="50" max="500" step="5"></div>
+        <div class="field"><span>Adquirir pared derecha ADC</span><input class="cfg" id="rightAcquireAdc" type="number" min="0" max="4095" step="10"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1000" step="10"></div>
-        <div class="hint">Giro nominal PWM 155. En una apertura derecha espera la secuencia pared → hueco → nueva pared: cuando el lateral derecho y el frontal rondan 2300 ADC considera que llegó al centro y recién entonces gira. Los ticks quedan solo como seguridad.</div>
+        <div class="hint">Giro inicial ≈45° a PWM 155. Después avanza a 155 hacia la salida elegida; cuando el lateral derecho vuelve a ver pared (por defecto ≥1900 ADC), el PID derecho toma el control y termina de acomodarlo.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -6939,7 +6886,7 @@ async function applyConfig(){
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
     'rightOpenAdc','leftOpenAdc','turnPwm',
-    'rightCenterAdc','frontCenterAdc','rightAdvanceTicks','decisionWaitMs'
+    'turn45Ms','rightAcquireAdc','decisionWaitMs'
   ];
 
   const p=new URLSearchParams();
@@ -7153,9 +7100,8 @@ void handleStatus() {
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
-  json += "\"rightCenterAdc\":" + String(cfg.rightCenterAdc) + ",";
-  json += "\"frontCenterAdc\":" + String(cfg.frontCenterAdc) + ",";
-  json += "\"rightAdvanceTicks\":" + String(cfg.rightAdvanceTicks) + ",";
+  json += "\"turn45Ms\":" + String(cfg.turn45Ms) + ",";
+  json += "\"rightAcquireAdc\":" + String(cfg.rightAcquireAdc) + ",";
   json += "\"turn90Ticks\":" + String(cfg.turn90Ticks) + ",";
   json += "\"turn180Ticks\":" + String(cfg.turn180Ticks) + ",";
   json += "\"decisionWaitMs\":" + String(cfg.decisionWaitMs) + ",";
@@ -7185,7 +7131,8 @@ void handleMode() {
   resetPid();
   frontWallStableCount = 0;
   rightOpenStableCount = 0;
-  rightReacquireStableCount = 0;
+  leftOpenStableCount = 0;
+  rightWallAcquireStableCount = 0;
   turnExitStableCount = 0;
 
   if (mode == "TEST") {
@@ -7231,7 +7178,8 @@ void handleRun() {
     if (activeMode == MODE_MAZE) {
       frontWallStableCount = 0;
       rightOpenStableCount = 0;
-      rightReacquireStableCount = 0;
+      leftOpenStableCount = 0;
+      rightWallAcquireStableCount = 0;
       turnExitStableCount = 0;
       enterState(STATE_FOLLOW);
     } else {
@@ -7388,14 +7336,11 @@ void handleConfig() {
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = 155;
 
-  if (server.hasArg("rightCenterAdc"))
-    cfg.rightCenterAdc = constrain(server.arg("rightCenterAdc").toInt(), 0, 4095);
+  if (server.hasArg("turn45Ms"))
+    cfg.turn45Ms = constrain(server.arg("turn45Ms").toInt(), 50, 500);
 
-  if (server.hasArg("frontCenterAdc"))
-    cfg.frontCenterAdc = constrain(server.arg("frontCenterAdc").toInt(), 0, 4095);
-
-  if (server.hasArg("rightAdvanceTicks"))
-    cfg.rightAdvanceTicks = constrain(server.arg("rightAdvanceTicks").toInt(), 0, 1500);
+  if (server.hasArg("rightAcquireAdc"))
+    cfg.rightAcquireAdc = constrain(server.arg("rightAcquireAdc").toInt(), 0, 4095);
 
   if (server.hasArg("turn90Ticks"))
     cfg.turn90Ticks = constrain(server.arg("turn90Ticks").toInt(), 1, 5000);
@@ -7436,7 +7381,8 @@ void handleStop() {
   stopMotors();
   resetPid();
   rightOpenStableCount = 0;
-  rightReacquireStableCount = 0;
+  leftOpenStableCount = 0;
+  rightWallAcquireStableCount = 0;
   turnExitStableCount = 0;
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "STOP");
