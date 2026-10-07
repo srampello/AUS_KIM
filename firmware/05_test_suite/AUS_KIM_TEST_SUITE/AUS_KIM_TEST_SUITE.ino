@@ -147,9 +147,10 @@ struct ControlConfig {
   int frontWallAdc = 1750;
   int frontConfirmAdc = 1750;
 
-  // Laterales. Solo necesitamos saber si a la izquierda hay salida.
-  int rightOpenAdc = 1750;
-  int leftOpenAdc = 1750;
+  // Laterales: con pared cercana las lecturas observadas son ~2200 o mas.
+  // Dejamos margen: <2100 = apertura, >=2100 = pared.
+  int rightOpenAdc = 2100;
+  int leftOpenAdc = 2100;
 
   // Seguimiento/giro.
   int approachMinPwm = 140; // legacy
@@ -6607,7 +6608,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre avanza con PID de pared derecha a 155. Al llegar a pared frontal (1750) frena, espera 400 ms y decide: izquierda libre → gira 90° a izquierda; izquierda cerrada → gira 180°. Después vuelve al PID derecho.
+          Siempre avanza con PID de pared derecha a 155. Al llegar a pared frontal (1750) frena y espera 400 ms. Laterales: <2100 = apertura, ≥2100 = pared. Izquierda libre → 90° izquierda; izquierda cerrada → 180°.
         </div>
       </div>
 
