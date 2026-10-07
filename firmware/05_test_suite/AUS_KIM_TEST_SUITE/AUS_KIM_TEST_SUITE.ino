@@ -123,7 +123,7 @@ enum RobotState : uint8_t {
   STATE_BRAKE,
   STATE_DECISION_WAIT,
   STATE_TURN_LEFT,
-  STATE_UTURN
+  STATE_TURN_RIGHT
 };
 
 struct SensorData {
@@ -634,7 +634,7 @@ const char* stateName(RobotState s) {
     case STATE_BRAKE:         return "FRENANDO";
     case STATE_DECISION_WAIT: return "ESPERA 400 MS";
     case STATE_TURN_LEFT:     return "GIRO 90 IZQUIERDA";
-    case STATE_UTURN:         return "GIRO 180";
+    case STATE_TURN_RIGHT:    return "GIRO 90 DERECHA";
     case STATE_STOPPED:
     default:                  return "DETENIDO";
   }
@@ -689,7 +689,7 @@ void runMaze() {
       if (leftOpenStableCount >= EVENT_CONFIRM_SAMPLES) {
         pendingTurnState = STATE_TURN_LEFT;
       } else {
-        pendingTurnState = STATE_UTURN;
+        pendingTurnState = STATE_TURN_RIGHT;
       }
 
       enterState(STATE_DECISION_WAIT);
@@ -729,14 +729,13 @@ void runMaze() {
       break;
     }
 
-    case STATE_UTURN: {
+    case STATE_TURN_RIGHT: {
       uint32_t elapsed = now - stateStartMs;
       uint32_t ticks = getMoveTicksSum();
 
-      // La media vuelta tambien se hace a izquierda.
-      setDrive(-cfg.turnPwm, +cfg.turnPwm);
+      setDrive(+cfg.turnPwm, -cfg.turnPwm);
 
-      if (ticks >= (uint32_t)cfg.turn180Ticks) {
+      if (ticks >= (uint32_t)cfg.turn90Ticks) {
         stopMotors();
         resetPid();
         enterState(STATE_FOLLOW);
@@ -6608,7 +6607,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre avanza con PID de pared derecha a 155. Al llegar a pared frontal (1750) frena y espera 400 ms. Laterales: <2100 = apertura, ≥2100 = pared. Izquierda libre → 90° izquierda; izquierda cerrada → 180°.
+          Siempre avanza con PID de pared derecha a 155. Al llegar a pared frontal (1750) frena y espera 400 ms. Laterales: <2100 = apertura, ≥2100 = pared. Izquierda libre → 90° izquierda; izquierda con pared → 90° derecha.
         </div>
       </div>
 
