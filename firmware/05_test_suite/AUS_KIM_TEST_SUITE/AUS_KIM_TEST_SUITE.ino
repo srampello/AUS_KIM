@@ -112,6 +112,8 @@ enum RunMode : uint8_t {
 
 enum EncoderTestAction : uint8_t {
   ENC_TEST_NONE = 0,
+  ENC_TEST_RIGHT_45,
+  ENC_TEST_LEFT_45,
   ENC_TEST_RIGHT_90,
   ENC_TEST_LEFT_90,
   ENC_TEST_RIGHT_180,
@@ -159,6 +161,8 @@ struct ControlConfig {
 
   // Giros medidos por encoders. Quedan ajustables porque uno de los
   // encoders no esta midiendo de forma totalmente confiable.
+  int turn45RightTicks = 80;
+  int turn45LeftTicks = 80;
   int turn90RightTicks = 160;
   int turn90LeftTicks = 160;
   int turn180Ticks = 350;
@@ -408,6 +412,8 @@ uint32_t getMoveTicksAverage() {
 
 const char* encoderTestActionName(EncoderTestAction action) {
   switch (action) {
+    case ENC_TEST_RIGHT_45:  return "DERECHA 45";
+    case ENC_TEST_LEFT_45:   return "IZQUIERDA 45";
     case ENC_TEST_RIGHT_90:  return "DERECHA 90";
     case ENC_TEST_LEFT_90:   return "IZQUIERDA 90";
     case ENC_TEST_RIGHT_180: return "DERECHA 180";
@@ -453,11 +459,13 @@ void runEncoderTest() {
   int pwm = constrain(encoderTestPwm, MIN_MOVING_PWM, 255);
 
   switch (encoderTestAction) {
+    case ENC_TEST_RIGHT_45:
     case ENC_TEST_RIGHT_90:
     case ENC_TEST_RIGHT_180:
       setDrive(+pwm, -pwm);
       break;
 
+    case ENC_TEST_LEFT_45:
     case ENC_TEST_LEFT_90:
       setDrive(-pwm, +pwm);
       break;
@@ -6674,6 +6682,20 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
       </div>
 
       <div class="card">
+        <h2>Giro derecha 45°</h2>
+        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal45RightTicks" type="number" min="1" step="1" value="80"></div>
+        <button class="full start" onclick="startEncoderTest('R45')">PROBAR 45° DERECHA</button>
+        <div class="hint">Calibración independiente del giro de 45° hacia la derecha.</div>
+      </div>
+
+      <div class="card">
+        <h2>Giro izquierda 45°</h2>
+        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal45LeftTicks" type="number" min="1" step="1" value="80"></div>
+        <button class="full start" onclick="startEncoderTest('L45')">PROBAR 45° IZQUIERDA</button>
+        <div class="hint">Calibración independiente del giro de 45° hacia la izquierda.</div>
+      </div>
+
+      <div class="card">
         <h2>Giro derecha 90°</h2>
         <div class="field"><span>Ticks objetivo (suma)</span><input id="cal90RightTicks" type="number" min="1" step="1" value="160"></div>
         <button class="full start" onclick="startEncoderTest('R90')">PROBAR 90° DERECHA</button>
@@ -6808,7 +6830,11 @@ async function startEncoderTest(action){
   const pwm=Math.max(155,Math.min(255,parseInt(document.getElementById('calPwm').value||'155',10)));
   const p=new URLSearchParams({action:action,pwm:String(pwm)});
 
-  if(action==='R90'){
+  if(action==='R45'){
+    p.set('ticks',document.getElementById('cal45RightTicks').value);
+  }else if(action==='L45'){
+    p.set('ticks',document.getElementById('cal45LeftTicks').value);
+  }else if(action==='R90'){
     p.set('ticks',document.getElementById('cal90RightTicks').value);
   }else if(action==='L90'){
     p.set('ticks',document.getElementById('cal90LeftTicks').value);
@@ -6836,6 +6862,7 @@ async function applyConfig(){
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
     'rightOpenAdc','leftOpenAdc','turnPwm',
+    'turn45RightTicks','turn45LeftTicks',
     'turn90RightTicks','turn90LeftTicks','turn180Ticks','decisionWaitMs'
   ];
 
@@ -6926,6 +6953,8 @@ async function updateStatus(){
 
       document.getElementById('manualPwmTest').value=d.config.manualPwm;
       document.getElementById('calPwm').value=Math.max(155,d.config.turnPwm);
+      document.getElementById('cal45RightTicks').value=d.config.turn45RightTicks;
+      document.getElementById('cal45LeftTicks').value=d.config.turn45LeftTicks;
       document.getElementById('cal90RightTicks').value=d.config.turn90RightTicks;
       document.getElementById('cal90LeftTicks').value=d.config.turn90LeftTicks;
       document.getElementById('cal180Ticks').value=d.config.turn180Ticks;
@@ -7050,6 +7079,8 @@ void handleStatus() {
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
+  json += "\"turn45RightTicks\":" + String(cfg.turn45RightTicks) + ",";
+  json += "\"turn45LeftTicks\":" + String(cfg.turn45LeftTicks) + ",";
   json += "\"turn90RightTicks\":" + String(cfg.turn90RightTicks) + ",";
   json += "\"turn90LeftTicks\":" + String(cfg.turn90LeftTicks) + ",";
   json += "\"turn180Ticks\":" + String(cfg.turn180Ticks) + ",";
@@ -7205,7 +7236,17 @@ void handleEncoderTest() {
 
   encoderTestRequestedCm = 0.0f;
 
-  if (action == "R90") {
+  if (action == "R45") {
+    encoderTestAction = ENC_TEST_RIGHT_45;
+    encoderTestTarget = server.hasArg("ticks")
+      ? (uint32_t)constrain(server.arg("ticks").toInt(), 1, 5000)
+      : (uint32_t)cfg.turn45RightTicks;
+  } else if (action == "L45") {
+    encoderTestAction = ENC_TEST_LEFT_45;
+    encoderTestTarget = server.hasArg("ticks")
+      ? (uint32_t)constrain(server.arg("ticks").toInt(), 1, 5000)
+      : (uint32_t)cfg.turn45LeftTicks;
+  } else if (action == "R90") {
     encoderTestAction = ENC_TEST_RIGHT_90;
     encoderTestTarget = server.hasArg("ticks")
       ? (uint32_t)constrain(server.arg("ticks").toInt(), 1, 5000)
@@ -7237,7 +7278,7 @@ void handleEncoderTest() {
     // En avance el objetivo es el promedio de ticks de ambas ruedas.
     encoderTestTarget = (uint32_t)roundf(cm * ticksPerCm);
   } else {
-    server.send(400, "text/plain", "action debe ser R90, L90, R180, FWD o STOP");
+    server.send(400, "text/plain", "action debe ser R45, L45, R90, L90, R180, FWD o STOP");
     return;
   }
 
@@ -7282,6 +7323,12 @@ void handleConfig() {
 
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = 155;
+
+  if (server.hasArg("turn45RightTicks"))
+    cfg.turn45RightTicks = constrain(server.arg("turn45RightTicks").toInt(), 1, 5000);
+
+  if (server.hasArg("turn45LeftTicks"))
+    cfg.turn45LeftTicks = constrain(server.arg("turn45LeftTicks").toInt(), 1, 5000);
 
   if (server.hasArg("turn90RightTicks"))
     cfg.turn90RightTicks = constrain(server.arg("turn90RightTicks").toInt(), 1, 5000);
