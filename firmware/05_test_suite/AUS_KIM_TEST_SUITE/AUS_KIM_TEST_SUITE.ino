@@ -113,6 +113,7 @@ enum RunMode : uint8_t {
 enum EncoderTestAction : uint8_t {
   ENC_TEST_NONE = 0,
   ENC_TEST_RIGHT_90,
+  ENC_TEST_LEFT_90,
   ENC_TEST_RIGHT_180,
   ENC_TEST_FORWARD
 };
@@ -158,7 +159,8 @@ struct ControlConfig {
 
   // Giros medidos por encoders. Quedan ajustables porque uno de los
   // encoders no esta midiendo de forma totalmente confiable.
-  int turn90Ticks = 160;
+  int turn90RightTicks = 160;
+  int turn90LeftTicks = 160;
   int turn180Ticks = 350;
 
   // Pausa completa antes de cualquier giro.
@@ -407,6 +409,7 @@ uint32_t getMoveTicksAverage() {
 const char* encoderTestActionName(EncoderTestAction action) {
   switch (action) {
     case ENC_TEST_RIGHT_90:  return "DERECHA 90";
+    case ENC_TEST_LEFT_90:   return "IZQUIERDA 90";
     case ENC_TEST_RIGHT_180: return "DERECHA 180";
     case ENC_TEST_FORWARD:   return "AVANCE";
     case ENC_TEST_NONE:
@@ -453,6 +456,10 @@ void runEncoderTest() {
     case ENC_TEST_RIGHT_90:
     case ENC_TEST_RIGHT_180:
       setDrive(+pwm, -pwm);
+      break;
+
+    case ENC_TEST_LEFT_90:
+      setDrive(-pwm, +pwm);
       break;
 
     case ENC_TEST_FORWARD:
@@ -714,7 +721,7 @@ void runMaze() {
 
       setDrive(-cfg.turnPwm, +cfg.turnPwm);
 
-      if (ticks >= (uint32_t)cfg.turn90Ticks) {
+      if (ticks >= (uint32_t)cfg.turn90LeftTicks) {
         stopMotors();
         resetPid();
         enterState(STATE_FOLLOW);
@@ -735,7 +742,7 @@ void runMaze() {
 
       setDrive(+cfg.turnPwm, -cfg.turnPwm);
 
-      if (ticks >= (uint32_t)cfg.turn90Ticks) {
+      if (ticks >= (uint32_t)cfg.turn90RightTicks) {
         stopMotors();
         resetPid();
         enterState(STATE_FOLLOW);
@@ -6622,7 +6629,8 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
       <div class="card">
         <h2>Giros por encoders</h2>
         <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="155" max="155" step="1"></div>
-        <div class="field"><span>Giro izquierda 90° (ticks suma)</span><input class="cfg" id="turn90Ticks" type="number" min="1" max="5000" step="1"></div>
+        <div class="field"><span>Giro 90° derecha (ticks suma)</span><input class="cfg" id="turn90RightTicks" type="number" min="1" max="5000" step="1"></div>
+        <div class="field"><span>Giro 90° izquierda (ticks suma)</span><input class="cfg" id="turn90LeftTicks" type="number" min="1" max="5000" step="1"></div>
         <div class="field"><span>Giro 180° (ticks suma)</span><input class="cfg" id="turn180Ticks" type="number" min="1" max="10000" step="1"></div>
         <div class="field"><span>Espera antes de girar ms</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1500" step="10"></div>
         <div class="hint">Los giros usan la suma absoluta de ambos encoders. Como uno está midiendo mal, los ticks quedan ajustables para calibrarlos físicamente. Si luego identificamos cuál encoder falla, podemos pasar a usar solo el bueno.</div>
@@ -6667,9 +6675,16 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
 
       <div class="card">
         <h2>Giro derecha 90°</h2>
-        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal90Ticks" type="number" min="1" step="1" value="251"></div>
+        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal90RightTicks" type="number" min="1" step="1" value="160"></div>
         <button class="full start" onclick="startEncoderTest('R90')">PROBAR 90° DERECHA</button>
-        <div class="hint">Prueba independiente del encoder. El Maze no usa este valor.</div>
+        <div class="hint">Este valor se usa también para los giros a derecha del Maze.</div>
+      </div>
+
+      <div class="card">
+        <h2>Giro izquierda 90°</h2>
+        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal90LeftTicks" type="number" min="1" step="1" value="160"></div>
+        <button class="full start" onclick="startEncoderTest('L90')">PROBAR 90° IZQUIERDA</button>
+        <div class="hint">Este valor se usa también para los giros a izquierda del Maze.</div>
       </div>
 
       <div class="card">
@@ -6794,7 +6809,9 @@ async function startEncoderTest(action){
   const p=new URLSearchParams({action:action,pwm:String(pwm)});
 
   if(action==='R90'){
-    p.set('ticks',document.getElementById('cal90Ticks').value);
+    p.set('ticks',document.getElementById('cal90RightTicks').value);
+  }else if(action==='L90'){
+    p.set('ticks',document.getElementById('cal90LeftTicks').value);
   }else if(action==='R180'){
     p.set('ticks',document.getElementById('cal180Ticks').value);
   }else if(action==='FWD'){
@@ -6909,7 +6926,8 @@ async function updateStatus(){
 
       document.getElementById('manualPwmTest').value=d.config.manualPwm;
       document.getElementById('calPwm').value=Math.max(155,d.config.turnPwm);
-      document.getElementById('cal90Ticks').value=d.config.turn90Ticks;
+      document.getElementById('cal90RightTicks').value=d.config.turn90RightTicks;
+      document.getElementById('cal90LeftTicks').value=d.config.turn90LeftTicks;
       document.getElementById('cal180Ticks').value=d.config.turn180Ticks;
       document.getElementById('calTicksPerCm').value=d.encoderTest.ticksPerCm.toFixed(2);
       firstLoad=false;
@@ -7032,7 +7050,8 @@ void handleStatus() {
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
-  json += "\"turn90Ticks\":" + String(cfg.turn90Ticks) + ",";
+  json += "\"turn90RightTicks\":" + String(cfg.turn90RightTicks) + ",";
+  json += "\"turn90LeftTicks\":" + String(cfg.turn90LeftTicks) + ",";
   json += "\"turn180Ticks\":" + String(cfg.turn180Ticks) + ",";
   json += "\"decisionWaitMs\":" + String(cfg.decisionWaitMs) + ",";
   json += "\"manualPwm\":" + String(cfg.manualPwm);
@@ -7190,7 +7209,12 @@ void handleEncoderTest() {
     encoderTestAction = ENC_TEST_RIGHT_90;
     encoderTestTarget = server.hasArg("ticks")
       ? (uint32_t)constrain(server.arg("ticks").toInt(), 1, 5000)
-      : (uint32_t)cfg.turn90Ticks;
+      : (uint32_t)cfg.turn90RightTicks;
+  } else if (action == "L90") {
+    encoderTestAction = ENC_TEST_LEFT_90;
+    encoderTestTarget = server.hasArg("ticks")
+      ? (uint32_t)constrain(server.arg("ticks").toInt(), 1, 5000)
+      : (uint32_t)cfg.turn90LeftTicks;
   } else if (action == "R180") {
     encoderTestAction = ENC_TEST_RIGHT_180;
     encoderTestTarget = server.hasArg("ticks")
@@ -7213,7 +7237,7 @@ void handleEncoderTest() {
     // En avance el objetivo es el promedio de ticks de ambas ruedas.
     encoderTestTarget = (uint32_t)roundf(cm * ticksPerCm);
   } else {
-    server.send(400, "text/plain", "action debe ser R90, R180, FWD o STOP");
+    server.send(400, "text/plain", "action debe ser R90, L90, R180, FWD o STOP");
     return;
   }
 
@@ -7259,8 +7283,11 @@ void handleConfig() {
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = 155;
 
-  if (server.hasArg("turn90Ticks"))
-    cfg.turn90Ticks = constrain(server.arg("turn90Ticks").toInt(), 1, 5000);
+  if (server.hasArg("turn90RightTicks"))
+    cfg.turn90RightTicks = constrain(server.arg("turn90RightTicks").toInt(), 1, 5000);
+
+  if (server.hasArg("turn90LeftTicks"))
+    cfg.turn90LeftTicks = constrain(server.arg("turn90LeftTicks").toInt(), 1, 5000);
 
   if (server.hasArg("turn180Ticks"))
     cfg.turn180Ticks = constrain(server.arg("turn180Ticks").toInt(), 1, 10000);
