@@ -6836,7 +6836,7 @@ async function applyConfig(){
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
     'rightOpenAdc','leftOpenAdc','turnPwm',
-    'turn90Ticks','turn180Ticks','decisionWaitMs'
+    'turn90RightTicks','turn90LeftTicks','turn180Ticks','decisionWaitMs'
   ];
 
   const p=new URLSearchParams();
