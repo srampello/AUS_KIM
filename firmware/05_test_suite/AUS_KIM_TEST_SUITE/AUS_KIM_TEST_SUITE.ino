@@ -171,8 +171,8 @@ struct ControlConfig {
 
   // Maniobra de apertura lateral:
   // STOP 300 ms -> 5 cm recto -> STOP 300 ms -> giro -> STOP 300 ms.
-  int openingWaitMs = 300;
-  float openingAdvanceCm = 5.0f;
+  int openingWaitMs = 500;
+  float openingAdvanceCm = 3.0f;
 
   // Espera cuando encuentra una pared frontal, antes del giro izquierdo.
   int decisionWaitMs = 300;
@@ -663,8 +663,8 @@ int calculateApproachPwm() {
 const char* stateName(RobotState s) {
   switch (s) {
     case STATE_FOLLOW:               return "PID PARED DERECHA";
-    case STATE_RIGHT_OPEN_WAIT:      return "DERECHA / FRENO 300 MS";
-    case STATE_RIGHT_OPEN_ADVANCE:   return "DERECHA / AVANCE 5 CM";
+    case STATE_RIGHT_OPEN_WAIT:      return "DERECHA / FRENO 500 MS";
+    case STATE_RIGHT_OPEN_ADVANCE:   return "DERECHA / AVANCE 3 CM";
     case STATE_RIGHT_OPEN_WAIT_TURN: return "DERECHA / ESPERA GIRO";
     case STATE_FRONT_WAIT:           return "PARED FRONTAL / FRENO";
     case STATE_TURN_LEFT:            return "GIRO 90 IZQUIERDA";
@@ -781,7 +781,7 @@ void runMaze() {
 
     case STATE_RIGHT_OPEN_WAIT_TURN:
       stopMotors();
-      if (now - stateStartMs >= (uint32_t)cfg.openingWaitMs) {
+      if (now - stateStartMs >= 300UL) {
         captureMoveStart();
         enterState(STATE_TURN_RIGHT);
       }
@@ -841,7 +841,7 @@ void runMaze() {
 
     case STATE_POST_TURN_WAIT:
       stopMotors();
-      if (now - stateStartMs < (uint32_t)cfg.openingWaitMs) {
+      if (now - stateStartMs < 300UL) {
         break;
       }
 
@@ -6729,7 +6729,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          PID derecha a PWM configurable (inicial 180). Solo detecta APERTURA DERECHA (<1600) despues de haber visto pared derecha: frena 300 ms, avanza 5 cm, espera 300 ms, gira 90° derecha y espera 300 ms. Con pared frontal (1900), gira 90° izquierda; si sigue bloqueado, otros 90° izquierda para regresar. No usa apertura izquierda.
+          PID derecha a PWM configurable (inicial 180). Solo detecta APERTURA DERECHA (<1600) despues de haber visto pared derecha: frena 500 ms, avanza 3 cm, espera 300 ms, gira 90° derecha y espera 300 ms. Con pared frontal (1900), gira 90° izquierda; si sigue bloqueado, otros 90° izquierda para regresar. No usa apertura izquierda.
         </div>
       </div>
 
@@ -6738,7 +6738,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>STOP frontal ADC (≥)</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
         <div class="field"><span>Confirmacion segundo frontal ADC</span><input class="cfg" id="frontConfirmAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
-        <div class="field"><span>Espera en apertura y postgiro (ms)</span><input class="cfg" id="openingWaitMs" type="number" min="0" max="1000" step="10"></div>
+        <div class="field"><span>Espera antes de avanzar (ms)</span><input class="cfg" id="openingWaitMs" type="number" min="0" max="1000" step="10"></div>
         <div class="field"><span>Avance antes de girar derecha (cm)</span><input class="cfg" id="openingAdvanceCm" type="number" min="1" max="30" step="0.5"></div>
       </div>
 
