@@ -123,6 +123,8 @@ enum EncoderTestAction : uint8_t {
 enum RobotState : uint8_t {
   STATE_STOPPED = 0,
   STATE_FOLLOW,
+  STATE_RIGHT_GAP_WAIT,
+  STATE_RIGHT_GAP_ADVANCE,
   STATE_BRAKE,
   STATE_DECISION_WAIT,
   STATE_TURN_LEFT,
@@ -166,6 +168,11 @@ struct ControlConfig {
   int turn90RightTicks = 170;
   int turn90LeftTicks = 175;
   int turn180Ticks = 387;
+
+  // Cuando pierde la pared derecha durante PID:
+  // frena, espera y avanza al centro de la celda.
+  int rightGapWaitMs = 100;
+  float rightGapAdvanceCm = 18.0f;
 
   // Pausa completa antes de cualquier giro.
   int decisionWaitMs = 400;
@@ -228,6 +235,9 @@ uint8_t frontWallStableCount = 0;
 // Confirmacion de apertura izquierda al llegar a una pared frontal.
 uint8_t rightOpenStableCount = 0;
 uint8_t leftOpenStableCount = 0;
+
+// Evita repetir el avance de 18 cm mientras siga abierta la misma derecha.
+bool rightGapHandled = false;
 
 float errorPid = 0.0f;
 float prevErrorPid = 0.0f;
@@ -645,8 +655,10 @@ int calculateApproachPwm() {
 
 const char* stateName(RobotState s) {
   switch (s) {
-    case STATE_FOLLOW:        return "PID PARED DERECHA";
-    case STATE_BRAKE:         return "FRENANDO";
+    case STATE_FOLLOW:            return "PID PARED DERECHA";
+    case STATE_RIGHT_GAP_WAIT:    return "PAUSA APERTURA DERECHA";
+    case STATE_RIGHT_GAP_ADVANCE: return "AVANCE 18 CM";
+    case STATE_BRAKE:             return "FRENANDO";
     case STATE_DECISION_WAIT: return "ESPERA 400 MS";
     case STATE_TURN_LEFT:     return "GIRO 90 IZQUIERDA";
     case STATE_TURN_RIGHT:    return "GIRO 90 DERECHA";
@@ -680,15 +692,69 @@ void runMaze() {
       break;
 
     case STATE_FOLLOW:
-      // Comportamiento base: seguir SIEMPRE la pared derecha con PID.
+      // La pared frontal mantiene prioridad.
       if (frontBlocked) {
         stopMotors();
         enterState(STATE_BRAKE);
         break;
       }
 
+      // Cuando vuelve a ver pared derecha, habilita una nueva deteccion
+      // de apertura para el futuro.
+      if (!rightOpen) {
+        rightGapHandled = false;
+      }
+
+      // Si pierde la pared derecha de forma estable, frena una sola vez,
+      // espera 100 ms y luego avanza 18 cm recto para quedar centrado.
+      if (!rightGapHandled &&
+          rightOpenStableCount >= EVENT_CONFIRM_SAMPLES) {
+        rightGapHandled = true;
+        stopMotors();
+        enterState(STATE_RIGHT_GAP_WAIT);
+        break;
+      }
+
       followRightWallAtPwm(MAZE_FORWARD_PWM);
       break;
+
+    case STATE_RIGHT_GAP_WAIT:
+      stopMotors();
+
+      if (now - stateStartMs < (uint32_t)cfg.rightGapWaitMs) {
+        break;
+      }
+
+      captureMoveStart();
+      resetPid();
+      enterState(STATE_RIGHT_GAP_ADVANCE);
+      break;
+
+    case STATE_RIGHT_GAP_ADVANCE: {
+      // Distancia medida con el promedio de ambos encoders.
+      uint32_t targetTicks =
+        (uint32_t)roundf(cfg.rightGapAdvanceCm * TICKS_PER_CM);
+      uint32_t progressTicks = getMoveTicksAverage();
+
+      // Si aparece una pared frontal durante el avance, prioriza seguridad.
+      if (frontBlocked) {
+        stopMotors();
+        enterState(STATE_BRAKE);
+        break;
+      }
+
+      if (progressTicks >= targetTicks) {
+        stopMotors();
+        resetPid();
+        enterState(STATE_FOLLOW);
+        break;
+      }
+
+      // En esta zona la pared derecha justamente no existe:
+      // avanza recto, sin PID lateral.
+      setDrive(MAZE_FORWARD_PWM, MAZE_FORWARD_PWM);
+      break;
+    }
 
     case STATE_BRAKE:
       stopMotors();
@@ -6626,7 +6692,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre avanza con PID de pared derecha a 155. Al llegar a pared frontal (1750) frena y espera 400 ms. Laterales: <2100 = apertura, ≥2100 = pared. Izquierda libre → 90° izquierda; izquierda con pared → 90° derecha.
+          Siempre avanza con PID de pared derecha a 155. Si pierde la pared derecha, frena 100 ms y avanza 18 cm recto para centrarse en la celda. Al llegar a pared frontal (1750) frena 400 ms: izquierda libre → 90° izquierda; izquierda con pared → 90° derecha.
         </div>
       </div>
 
@@ -6636,6 +6702,8 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>Confirmacion segundo frontal ADC</span><input class="cfg" id="frontConfirmAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
+        <div class="field"><span>Espera al perder pared derecha (ms)</span><input class="cfg" id="rightGapWaitMs" type="number" min="0" max="1000" step="10"></div>
+        <div class="field"><span>Avance para centrar (cm)</span><input class="cfg" id="rightGapAdvanceCm" type="number" min="1" max="50" step="0.5"></div>
       </div>
 
       <div class="card">
@@ -6865,7 +6933,7 @@ async function applyConfig(){
   const ids=[
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
-    'rightOpenAdc','leftOpenAdc','turnPwm',
+    'rightOpenAdc','leftOpenAdc','rightGapWaitMs','rightGapAdvanceCm','turnPwm',
     'turn45RightTicks','turn45LeftTicks',
     'turn90RightTicks','turn90LeftTicks','turn180Ticks','decisionWaitMs'
   ];
@@ -7082,6 +7150,8 @@ void handleStatus() {
   json += "\"approachMinPwm\":" + String(cfg.approachMinPwm) + ",";
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
+  json += "\"rightGapWaitMs\":" + String(cfg.rightGapWaitMs) + ",";
+  json += "\"rightGapAdvanceCm\":" + String(cfg.rightGapAdvanceCm, 1) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
   json += "\"turn45RightTicks\":" + String(cfg.turn45RightTicks) + ",";
   json += "\"turn45LeftTicks\":" + String(cfg.turn45LeftTicks) + ",";
@@ -7116,6 +7186,7 @@ void handleMode() {
   frontWallStableCount = 0;
   rightOpenStableCount = 0;
   leftOpenStableCount = 0;
+  rightGapHandled = false;
 
   if (mode == "TEST") {
     activeMode = MODE_TEST;
@@ -7161,6 +7232,7 @@ void handleRun() {
       frontWallStableCount = 0;
       rightOpenStableCount = 0;
       leftOpenStableCount = 0;
+      rightGapHandled = false;
               enterState(STATE_FOLLOW);
     } else {
       robotState = STATE_FOLLOW;
@@ -7325,6 +7397,12 @@ void handleConfig() {
   if (server.hasArg("leftOpenAdc"))
     cfg.leftOpenAdc = constrain(server.arg("leftOpenAdc").toInt(), 0, 4095);
 
+  if (server.hasArg("rightGapWaitMs"))
+    cfg.rightGapWaitMs = constrain(server.arg("rightGapWaitMs").toInt(), 0, 1000);
+
+  if (server.hasArg("rightGapAdvanceCm"))
+    cfg.rightGapAdvanceCm = constrain(server.arg("rightGapAdvanceCm").toFloat(), 1.0f, 50.0f);
+
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = 155;
 
@@ -7377,6 +7455,7 @@ void handleStop() {
   resetPid();
   rightOpenStableCount = 0;
   leftOpenStableCount = 0;
+  rightGapHandled = false;
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "STOP");
 }
