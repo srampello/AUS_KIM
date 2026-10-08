@@ -163,9 +163,9 @@ struct ControlConfig {
   // encoders no esta midiendo de forma totalmente confiable.
   int turn45RightTicks = 80;
   int turn45LeftTicks = 80;
-  int turn90RightTicks = 160;
-  int turn90LeftTicks = 160;
-  int turn180Ticks = 350;
+  int turn90RightTicks = 170;
+  int turn90LeftTicks = 175;
+  int turn180Ticks = 387;
 
   // Pausa completa antes de cualquier giro.
   int decisionWaitMs = 400;
@@ -6697,21 +6697,21 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
 
       <div class="card">
         <h2>Giro derecha 90°</h2>
-        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal90RightTicks" type="number" min="1" step="1" value="160"></div>
+        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal90RightTicks" type="number" min="1" step="1" value="170"></div>
         <button class="full start" onclick="startEncoderTest('R90')">PROBAR 90° DERECHA</button>
         <div class="hint">Este valor se usa también para los giros a derecha del Maze.</div>
       </div>
 
       <div class="card">
         <h2>Giro izquierda 90°</h2>
-        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal90LeftTicks" type="number" min="1" step="1" value="160"></div>
+        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal90LeftTicks" type="number" min="1" step="1" value="175"></div>
         <button class="full start" onclick="startEncoderTest('L90')">PROBAR 90° IZQUIERDA</button>
         <div class="hint">Este valor se usa también para los giros a izquierda del Maze.</div>
       </div>
 
       <div class="card">
         <h2>Giro derecha 180°</h2>
-        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal180Ticks" type="number" min="1" step="1" value="501"></div>
+        <div class="field"><span>Ticks objetivo (suma)</span><input id="cal180Ticks" type="number" min="1" step="1" value="387"></div>
         <button class="full start" onclick="startEncoderTest('R180')">PROBAR 180° DERECHA</button>
         <div class="hint">Prueba independiente del encoder. El Maze no usa este valor.</div>
       </div>
