@@ -173,6 +173,11 @@ struct ControlConfig {
   // STOP 300 ms -> 5 cm recto -> STOP 300 ms -> giro -> STOP 300 ms.
   int openingWaitMs = 500;
   float openingAdvanceCm = 3.0f;
+  // Avance recto independiente del PID de pared derecha.
+  float straightLeftTicksPerCm = 20.95f;
+  float straightRightTicksPerCm = 20.95f;
+  float straightKp = 40.0f;
+  int straightMaxCorrection = 25;
 
   // Espera cuando encuentra una pared frontal, antes del giro izquierdo.
   int decisionWaitMs = 300;
@@ -249,6 +254,8 @@ float prevErrorPid = 0.0f;
 float integralPid = 0.0f;
 float derivativePid = 0.0f;
 float correctionPid = 0.0f;
+float straightErrorCm = 0.0f;
+float straightCorrectionPwm = 0.0f;
 
 int motorLeftCmd = 0;   // signed
 int motorRightCmd = 0;  // signed
@@ -400,6 +407,8 @@ void readPhysicalEncoders(int32_t &left, int32_t &right) {
 
 void captureMoveStart() {
   readPhysicalEncoders(moveStartLeft, moveStartRight);
+  straightErrorCm = 0.0f;
+  straightCorrectionPwm = 0.0f;
 }
 
 void getMoveDeltas(uint32_t &deltaLeft, uint32_t &deltaRight) {
@@ -423,6 +432,35 @@ uint32_t getMoveTicksAverage() {
   uint32_t deltaRight;
   getMoveDeltas(deltaLeft, deltaRight);
   return (deltaLeft + deltaRight) / 2UL;
+}
+
+void getStraightWheelCm(float &leftCm, float &rightCm) {
+  uint32_t deltaLeft, deltaRight;
+  getMoveDeltas(deltaLeft, deltaRight);
+  leftCm = (float)deltaLeft / cfg.straightLeftTicksPerCm;
+  rightCm = (float)deltaRight / cfg.straightRightTicksPerCm;
+}
+
+float getMoveStraightCm() {
+  float leftCm, rightCm;
+  getStraightWheelCm(leftCm, rightCm);
+  return (leftCm + rightCm) * 0.5f;
+}
+
+// Si una rueda avanza mas que la otra, corregimos los PWM individuales.
+void driveStraightEncoders(int basePwm) {
+  float leftCm, rightCm;
+  getStraightWheelCm(leftCm, rightCm);
+  straightErrorCm = leftCm - rightCm;
+  straightCorrectionPwm = constrain(
+    straightErrorCm * cfg.straightKp,
+    -(float)cfg.straightMaxCorrection,
+    (float)cfg.straightMaxCorrection
+  );
+  int correction = (int)roundf(straightCorrectionPwm);
+  int leftPwm = constrain(basePwm - correction, MIN_MOVING_PWM, 255);
+  int rightPwm = constrain(basePwm + correction, MIN_MOVING_PWM, 255);
+  setDrive(leftPwm, rightPwm);
 }
 
 const char* encoderTestActionName(EncoderTestAction action) {
@@ -456,8 +494,8 @@ void runEncoderTest() {
   uint32_t progress = 0;
 
   if (encoderTestAction == ENC_TEST_FORWARD) {
-    // Para distancia se usa el promedio de ambas ruedas.
-    progress = getMoveTicksAverage();
+    // Distancias independientes por rueda.
+    progress = (uint32_t)roundf(getMoveStraightCm() * encoderTestTicksPerCm);
   } else {
     // Para giros se usa la suma absoluta, igual que en el Maze Solver.
     progress = getMoveTicksSum();
@@ -486,7 +524,7 @@ void runEncoderTest() {
       break;
 
     case ENC_TEST_FORWARD:
-      setDrive(+pwm, +pwm);
+      driveStraightEncoders(pwm);
       break;
 
     case ENC_TEST_NONE:
@@ -758,7 +796,7 @@ void runMaze() {
 
       uint32_t targetTicks =
         (uint32_t)roundf(cfg.openingAdvanceCm * TICKS_PER_CM);
-      if (getMoveTicksAverage() >= targetTicks) {
+      if (getMoveStraightCm() >= cfg.openingAdvanceCm) {
         stopMotors();
         enterState(STATE_RIGHT_OPEN_WAIT_TURN);
         break;
@@ -775,7 +813,7 @@ void runMaze() {
         break;
       }
 
-      setDrive(OPENING_ADVANCE_PWM, OPENING_ADVANCE_PWM);
+      driveStraightEncoders(OPENING_ADVANCE_PWM);
       break;
     }
 
@@ -6754,6 +6792,16 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
       </div>
 
       <div class="card">
+        <h2>Avance recto con encoders</h2>
+        <div class="hint">Sincroniza las ruedas en el avance de 3 cm y en la prueba AVANCE. Si los encoders son distintos, calibra ticks/cm de cada rueda.</div>
+        <div class="field"><span>Ticks/cm izquierdo</span><input class="cfg" id="straightLeftTicksPerCm" type="number" min="1" max="500" step="0.05"></div>
+        <div class="field"><span>Ticks/cm derecho</span><input class="cfg" id="straightRightTicksPerCm" type="number" min="1" max="500" step="0.05"></div>
+        <div class="field"><span>Kp avance recto (PWM/cm)</span><input class="cfg" id="straightKp" type="number" min="0" max="300" step="5"></div>
+        <div class="field"><span>Correccion maxima PWM</span><input class="cfg" id="straightMaxCorrection" type="number" min="0" max="80" step="1"></div>
+        <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
+      </div>
+
+      <div class="card">
         <h2>Telemetria Maze</h2>
         <div class="sensor-grid">
           <div class="metric"><div class="label">Frontal izquierdo</div><div class="value" id="mFL">0</div></div>
@@ -6766,6 +6814,8 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
           <div class="metric"><div class="label">Encoder derecho</div><div class="value" id="mEncR">0</div></div>
           <div class="metric"><div class="label">Error PID</div><div class="value" id="mError">0</div></div>
           <div class="metric"><div class="label">Correccion PID</div><div class="value" id="mCorrection">0</div></div>
+          <div class="metric"><div class="label">Error avance recto (cm)</div><div class="value" id="mStraightError">0</div></div>
+          <div class="metric"><div class="label">Correccion avance recto (PWM)</div><div class="value" id="mStraightTrim">0</div></div>
         </div>
       </div>
 
@@ -6970,6 +7020,7 @@ async function applyConfig(){
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
     'rightOpenAdc','openingWaitMs','openingAdvanceCm','turnPwm',
+    'straightLeftTicksPerCm','straightRightTicksPerCm','straightKp','straightMaxCorrection',
     'turn45RightTicks','turn45LeftTicks',
     'turn90RightTicks','turn90LeftTicks','turn180Ticks','decisionWaitMs'
   ];
@@ -7048,6 +7099,8 @@ async function updateStatus(){
     document.getElementById('mEncR').textContent=d.enc.right;
     document.getElementById('mError').textContent=d.pid.error.toFixed(1);
     document.getElementById('mCorrection').textContent=d.pid.correction.toFixed(1);
+    document.getElementById('mStraightError').textContent=d.straight.errorCm.toFixed(2);
+    document.getElementById('mStraightTrim').textContent=d.straight.correctionPwm.toFixed(1);
 
     // CALIBRACION ENCODERS
     document.getElementById('calState').textContent=
@@ -7118,7 +7171,9 @@ void handleStatus() {
   uint32_t encTestSum = encTestDeltaLeft + encTestDeltaRight;
   uint32_t encTestAverage = encTestSum / 2UL;
   uint32_t encTestProgressTicks =
-    (encoderTestAction == ENC_TEST_FORWARD) ? encTestAverage : encTestSum;
+    (encoderTestAction == ENC_TEST_FORWARD)
+      ? (uint32_t)roundf(getMoveStraightCm() * encoderTestTicksPerCm)
+      : encTestSum;
   float encTestProgress =
     (encoderTestTarget > 0)
       ? (100.0f * (float)encTestProgressTicks / (float)encoderTestTarget)
@@ -7155,6 +7210,11 @@ void handleStatus() {
   json += "\"integral\":" + String(integralPid, 2) + ",";
   json += "\"derivative\":" + String(derivativePid, 2) + ",";
   json += "\"correction\":" + String(correctionPid, 2);
+  json += "},";
+
+  json += "\"straight\":{";
+  json += "\"errorCm\":" + String(straightErrorCm, 3) + ",";
+  json += "\"correctionPwm\":" + String(straightCorrectionPwm, 2);
   json += "},";
 
   json += "\"motor\":{";
@@ -7199,6 +7259,10 @@ void handleStatus() {
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"openingWaitMs\":" + String(cfg.openingWaitMs) + ",";
   json += "\"openingAdvanceCm\":" + String(cfg.openingAdvanceCm, 1) + ",";
+  json += "\"straightLeftTicksPerCm\":" + String(cfg.straightLeftTicksPerCm, 3) + ",";
+  json += "\"straightRightTicksPerCm\":" + String(cfg.straightRightTicksPerCm, 3) + ",";
+  json += "\"straightKp\":" + String(cfg.straightKp, 2) + ",";
+  json += "\"straightMaxCorrection\":" + String(cfg.straightMaxCorrection) + ",";
   json += "\"turnPwm\":" + String(cfg.turnPwm) + ",";
   json += "\"turn45RightTicks\":" + String(cfg.turn45RightTicks) + ",";
   json += "\"turn45LeftTicks\":" + String(cfg.turn45LeftTicks) + ",";
@@ -7453,6 +7517,14 @@ void handleConfig() {
 
   if (server.hasArg("openingAdvanceCm"))
     cfg.openingAdvanceCm = constrain(server.arg("openingAdvanceCm").toFloat(), 1.0f, 30.0f);
+  if (server.hasArg("straightLeftTicksPerCm"))
+    cfg.straightLeftTicksPerCm = constrain(server.arg("straightLeftTicksPerCm").toFloat(), 1.0f, 500.0f);
+  if (server.hasArg("straightRightTicksPerCm"))
+    cfg.straightRightTicksPerCm = constrain(server.arg("straightRightTicksPerCm").toFloat(), 1.0f, 500.0f);
+  if (server.hasArg("straightKp"))
+    cfg.straightKp = constrain(server.arg("straightKp").toFloat(), 0.0f, 300.0f);
+  if (server.hasArg("straightMaxCorrection"))
+    cfg.straightMaxCorrection = constrain(server.arg("straightMaxCorrection").toInt(), 0, 80);
 
   if (server.hasArg("turnPwm"))
     cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), 120, 255);
