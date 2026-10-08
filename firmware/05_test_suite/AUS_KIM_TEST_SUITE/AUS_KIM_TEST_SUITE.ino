@@ -149,8 +149,8 @@ struct ControlConfig {
 
   // STOP frontal.
   // Sharp: pared cercana = ADC mayor.
-  int frontWallAdc = 1750;
-  int frontConfirmAdc = 1750;
+  int frontWallAdc = 1700;
+  int frontConfirmAdc = 1700;
 
   // Laterales: con pared cercana las lecturas observadas son ~2200 o mas.
   // Dejamos margen: <2100 = apertura, >=2100 = pared.
@@ -159,7 +159,7 @@ struct ControlConfig {
 
   // Seguimiento/giro.
   int approachMinPwm = 140; // legacy
-  int turnPwm = 155;
+  int turnPwm = 180;
 
   // Giros medidos por encoders. Quedan ajustables porque uno de los
   // encoders no esta midiendo de forma totalmente confiable.
@@ -201,9 +201,8 @@ const int MIN_MOVING_PWM = 155;
 const uint16_t BRAKE_SETTLE_MS = 100;
 
 // Avance normal por PID.
-const int MAZE_FORWARD_PWM = 155;
-const int MAZE_FORWARD_MIN_PWM = 140;
-const int MAZE_FORWARD_MAX_PWM = 165;
+const int MAZE_FORWARD_MIN_PWM = 120;
+const int MAZE_FORWARD_MAX_PWM = 255;
 
 // Seguridad: si un encoder falla durante un giro, no girar para siempre.
 const uint16_t TURN_ENCODER_TIMEOUT_MS = 2200;
@@ -646,7 +645,7 @@ void followRightWall() {
 
 int calculateApproachPwm() {
   if (frontBlocked) return 0;
-  return MAZE_FORWARD_PWM;
+  return cfg.basePwm;
 }
 
 // ============================================================
@@ -715,7 +714,7 @@ void runMaze() {
         break;
       }
 
-      followRightWallAtPwm(MAZE_FORWARD_PWM);
+      followRightWallAtPwm(cfg.basePwm);
       break;
 
     case STATE_RIGHT_GAP_WAIT:
@@ -752,7 +751,7 @@ void runMaze() {
 
       // En esta zona la pared derecha justamente no existe:
       // avanza recto, sin PID lateral.
-      setDrive(MAZE_FORWARD_PWM, MAZE_FORWARD_PWM);
+      setDrive(cfg.basePwm, cfg.basePwm);
       break;
     }
 
@@ -6692,7 +6691,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre avanza con PID de pared derecha a 155. Si pierde la pared derecha, frena 100 ms y avanza 18 cm recto para centrarse en la celda. Al llegar a pared frontal (1750) frena 400 ms: izquierda libre → 90° izquierda; izquierda con pared → 90° derecha.
+          Siempre avanza con PID de pared derecha con PWM configurable. Si pierde la pared derecha, frena 100 ms y avanza 18 cm recto con el PWM de avance configurado para centrarse en la celda. Al llegar a pared frontal (1750) frena 400 ms: izquierda libre → 90° izquierda; izquierda con pared → 90° derecha.
         </div>
       </div>
 
@@ -6708,7 +6707,8 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
 
       <div class="card">
         <h2>Giros por encoders</h2>
-        <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="155" max="155" step="1"></div>
+        <div class="field"><span>PWM avance Maze</span><input class="cfg" id="basePwm" type="number" min="120" max="255" step="1"></div>
+        <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="120" max="255" step="1"></div>
         <div class="field"><span>Giro 90° derecha (ticks suma)</span><input class="cfg" id="turn90RightTicks" type="number" min="1" max="5000" step="1"></div>
         <div class="field"><span>Giro 90° izquierda (ticks suma)</span><input class="cfg" id="turn90LeftTicks" type="number" min="1" max="5000" step="1"></div>
         <div class="field"><span>Giro 180° (ticks suma)</span><input class="cfg" id="turn180Ticks" type="number" min="1" max="10000" step="1"></div>
@@ -7404,7 +7404,7 @@ void handleConfig() {
     cfg.rightGapAdvanceCm = constrain(server.arg("rightGapAdvanceCm").toFloat(), 1.0f, 50.0f);
 
   if (server.hasArg("turnPwm"))
-    cfg.turnPwm = 155;
+    cfg.turnPwm = constrain(server.arg("turnPwm").toInt(), 120, 255);
 
   if (server.hasArg("turn45RightTicks"))
     cfg.turn45RightTicks = constrain(server.arg("turn45RightTicks").toInt(), 1, 5000);
