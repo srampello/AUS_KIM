@@ -737,9 +737,11 @@ void runMaze() {
       }
 
       if (elapsed >= TURN_ENCODER_TIMEOUT_MS) {
+        // Si el encoder falla y no llega al objetivo, no detener el Maze.
+        // Abandona el giro y vuelve al seguimiento por pared derecha.
         stopMotors();
-        running = false;
-        robotState = STATE_STOPPED;
+        resetPid();
+        enterState(STATE_FOLLOW);
       }
       break;
     }
@@ -758,9 +760,11 @@ void runMaze() {
       }
 
       if (elapsed >= TURN_ENCODER_TIMEOUT_MS) {
+        // Si el encoder falla y no llega al objetivo, no detener el Maze.
+        // Abandona el giro y vuelve al seguimiento por pared derecha.
         stopMotors();
-        running = false;
-        robotState = STATE_STOPPED;
+        resetPid();
+        enterState(STATE_FOLLOW);
       }
       break;
     }
