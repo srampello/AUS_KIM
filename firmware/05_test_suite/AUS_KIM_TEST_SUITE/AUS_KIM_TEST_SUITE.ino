@@ -229,6 +229,7 @@ uint32_t lastHeartbeatMs = 0;
 SensorData sFL, sFR, sLL, sLR;
 
 bool frontBlocked = false;
+String stopReason = "NINGUNA";  // Ultimo motivo de detencion
 bool rightOpen = false;
 bool leftOpen = false;
 
@@ -765,6 +766,9 @@ void runMaze() {
 
       if (now - stateStartMs >= OPENING_ADVANCE_TIMEOUT_MS) {
         // No seguir a ciegas si un encoder esta fallando.
+        stopReason = "TIMEOUT_AVANCE_5CM_t=" + String(getMoveTicksAverage()) + "_obj="
+                   + String((uint32_t)roundf(cfg.openingAdvanceCm * TICKS_PER_CM));
+        Serial.println("AUS_KIM STOP: " + stopReason);
         stopMotors();
         running = false;
         robotState = STATE_STOPPED;
@@ -802,6 +806,8 @@ void runMaze() {
       }
 
       if (now - stateStartMs >= TURN_ENCODER_TIMEOUT_MS) {
+        stopReason = "TIMEOUT_GIRO_IZQ_t=" + String(ticks) + "_obj=" + String(cfg.turn90LeftTicks);
+        Serial.println("AUS_KIM STOP: " + stopReason);
         stopMotors();
         running = false;
         robotState = STATE_STOPPED;
@@ -821,6 +827,8 @@ void runMaze() {
       }
 
       if (now - stateStartMs >= TURN_ENCODER_TIMEOUT_MS) {
+        stopReason = "TIMEOUT_GIRO_DER_t=" + String(ticks) + "_obj=" + String(cfg.turn90RightTicks);
+        Serial.println("AUS_KIM STOP: " + stopReason);
         stopMotors();
         running = false;
         robotState = STATE_STOPPED;
@@ -847,6 +855,9 @@ void runMaze() {
       // Tras dos giros izquierdos, el frente deberia estar libre.
       // Si no lo esta, detener por seguridad y revisar sensores.
       if (frontBlocked && frontLeftTurns >= 2) {
+        stopReason = "FRENTE_BLOQUEADO_TRAS_2_GIROS_FL=" + String(sFL.filtered)
+                   + "_FR=" + String(sFR.filtered);
+        Serial.println("AUS_KIM STOP: " + stopReason);
         running = false;
         robotState = STATE_STOPPED;
         break;
@@ -6707,6 +6718,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
       <div class="card">
         <h2>Maze Solver</h2>
         <div class="status" id="mazeState">DETENIDO</div>
+        <div class="hint">Ultima detencion: <b id="mazeStopReason">NINGUNA</b></div>
         <button class="full start" onclick="startAutonomous('MAZE')">INICIAR LABERINTO</button>
         <button class="full stop" onclick="stopAll()">STOP</button>
 
@@ -7025,6 +7037,7 @@ async function updateStatus(){
 
     // MAZE
     document.getElementById('mazeState').textContent=d.mode==='MAZE' ? d.state : 'DETENIDO';
+    document.getElementById('mazeStopReason').textContent=d.stopReason||'NINGUNA';
     document.getElementById('mFrontFlag').textContent=d.flags.frontBlocked?'PARED':'LIBRE';
     document.getElementById('mRightFlag').textContent=d.flags.rightOpen?'LIBRE':'PARED';
     document.getElementById('mLeftFlag').textContent=d.flags.leftOpen?'LIBRE':'PARED';
@@ -7118,6 +7131,7 @@ void handleStatus() {
   json += "\"running\":" + String(running ? "true" : "false") + ",";
   json += "\"mode\":\"" + String(modeName(activeMode)) + "\",";
   json += "\"state\":\"" + String(stateName(robotState)) + "\",";
+  json += "\"stopReason\":\"" + stopReason + "\",";
 
   json += "\"sensor\":{";
   json += "\"fl\":" + String(sFL.filtered) + ",";
@@ -7257,6 +7271,7 @@ void handleRun() {
   bool state = server.arg("state") == "1";
 
   if (state) {
+    stopReason = "NINGUNA";
     resetPid();
     lastHeartbeatMs = millis();
     lastDecisionMs = millis();
@@ -7273,6 +7288,7 @@ void handleRun() {
       robotState = STATE_FOLLOW;
     }
   } else {
+    stopReason = "PARADA_MANUAL_API_RUN";
     running = false;
     robotState = STATE_STOPPED;
     stopMotors();
@@ -7481,6 +7497,8 @@ void handlePing() {
 }
 
 void handleStop() {
+  stopReason = "PARADA_MANUAL_O_PAGINA_CERRADA";
+  Serial.println("AUS_KIM STOP: " + stopReason);
   running = false;
   robotState = STATE_STOPPED;
   pendingTurnState = STATE_STOPPED;
@@ -7587,6 +7605,8 @@ void loop() {
   bool motorsRunning = (motorLeftCmd != 0) || (motorRightCmd != 0);
 
   if (motorsRunning && (now - lastHeartbeatMs > WEB_FAILSAFE_MS)) {
+    stopReason = "FAILSAFE_WIFI_MS=" + String(now - lastHeartbeatMs);
+    Serial.println("AUS_KIM STOP: " + stopReason);
     running = false;
     robotState = STATE_STOPPED;
     pendingTurnState = STATE_STOPPED;
