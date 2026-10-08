@@ -204,6 +204,9 @@ const uint16_t BRAKE_SETTLE_MS = 100;
 const int MAZE_FORWARD_MIN_PWM = 120;
 const int MAZE_FORWARD_MAX_PWM = 255;
 
+// Avance recto especial al perder la pared derecha.
+const int RIGHT_GAP_ADVANCE_PWM = 185;
+
 // Seguridad: si un encoder falla durante un giro, no girar para siempre.
 const uint16_t TURN_ENCODER_TIMEOUT_MS = 2200;
 const uint8_t EVENT_CONFIRM_SAMPLES = 3;
@@ -616,7 +619,7 @@ void driveRightWallPid(
   int leftPwm  = basePwm - (int)correctionPid;
   int rightPwm = basePwm + (int)correctionPid;
 
-  // Techo duro: el PID nunca puede saturar una rueda a 255.
+  // Cada rueda puede usar todo el rango permitido hasta PWM 255.
   leftPwm  = constrain(leftPwm, minWheelPwm, maxWheelPwm);
   rightPwm = constrain(rightPwm, minWheelPwm, maxWheelPwm);
 
@@ -625,9 +628,8 @@ void driveRightWallPid(
 }
 
 void followRightWallAtPwm(int basePwm) {
-  // Seguimiento normal: cada rueda queda limitada entre 140 y 165 PWM.
-  // El PID puede desacelerar una rueda y acelerar la otra, pero nunca
-  // salir de este rango.
+  // Seguimiento normal: base configurable y correccion PID.
+  // Cada rueda puede variar entre MAZE_FORWARD_MIN_PWM y 255.
   basePwm = constrain(basePwm, MAZE_FORWARD_MIN_PWM, MAZE_FORWARD_MAX_PWM);
 
   driveRightWallPid(
@@ -751,7 +753,7 @@ void runMaze() {
 
       // En esta zona la pared derecha justamente no existe:
       // avanza recto, sin PID lateral.
-      setDrive(cfg.basePwm, cfg.basePwm);
+      setDrive(RIGHT_GAP_ADVANCE_PWM, RIGHT_GAP_ADVANCE_PWM);
       break;
     }
 
@@ -6691,7 +6693,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         </div>
 
         <div class="hint">
-          Siempre avanza con PID de pared derecha con PWM configurable. Si pierde la pared derecha, frena 100 ms y avanza 18 cm recto con el PWM de avance configurado para centrarse en la celda. Al llegar a pared frontal (1750) frena 400 ms: izquierda libre → 90° izquierda; izquierda con pared → 90° derecha.
+          Siempre avanza con PID de pared derecha con PWM configurable. Si pierde la pared derecha, frena 100 ms y avanza 18 cm recto a PWM 185 para centrarse en la celda. Al llegar a pared frontal (1750) frena 400 ms: izquierda libre → 90° izquierda; izquierda con pared → 90° derecha.
         </div>
       </div>
 
