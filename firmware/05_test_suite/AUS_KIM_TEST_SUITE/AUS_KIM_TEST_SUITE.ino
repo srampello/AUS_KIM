@@ -6736,7 +6736,6 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
         <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="120" max="255" step="1"></div>
         <div class="field"><span>Giro 90° derecha (ticks suma)</span><input class="cfg" id="turn90RightTicks" type="number" min="1" max="5000" step="1"></div>
         <div class="field"><span>Giro 90° izquierda (ticks suma)</span><input class="cfg" id="turn90LeftTicks" type="number" min="1" max="5000" step="1"></div>
-        <div class="field"><span>Giro 180° (ticks suma)</span><input class="cfg" id="turn180Ticks" type="number" min="1" max="10000" step="1"></div>
         <div class="field"><span>STOP previo a giro frontal (ms)</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1500" step="10"></div>
         <div class="hint">Los giros usan la suma absoluta de ambos encoders. Como uno está midiendo mal, los ticks quedan ajustables para calibrarlos físicamente. Si luego identificamos cuál encoder falla, podemos pasar a usar solo el bueno.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
@@ -6958,7 +6957,7 @@ async function applyConfig(){
   const ids=[
     'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
-    'rightOpenAdc','leftOpenAdc','openingWaitMs','openingAdvanceCm','turnPwm',
+    'rightOpenAdc','openingWaitMs','openingAdvanceCm','turnPwm',
     'turn45RightTicks','turn45LeftTicks',
     'turn90RightTicks','turn90LeftTicks','turn180Ticks','decisionWaitMs'
   ];
@@ -7490,6 +7489,9 @@ void handleStop() {
   stopMotors();
   resetPid();
   rightOpenStableCount = 0;
+  rightWallStableCount = 0;
+  rightOpeningArmed = false;
+  frontLeftTurns = 0;
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "STOP");
 }
