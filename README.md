@@ -275,3 +275,36 @@ Panel: http://192.168.4.1
 ```
 
 Al cambiar de pestaña/modo, el firmware detiene los motores por seguridad. Tambien mantiene un fail-safe de comunicacion web.
+
+## Etapa 06 - Race Control RMP (largada)
+
+Dos interfaces, **un solo codigo de navegacion**:
+
+- Test Suite: `firmware/05_test_suite/AUS_KIM_TEST_SUITE/AUS_KIM_TEST_SUITE.ino`
+  - `http://192.168.4.1/`: interfaz de calibracion y pruebas.
+  - `http://192.168.4.1/race`: interfaz sencilla de carrera RMP.
+- Race: `firmware/06_race/AUS_KIM_RACE/AUS_KIM_RACE.ino`
+  - `http://192.168.4.1/`: interfaz de carrera RMP como pantalla principal.
+  - El boton circular central con logo **RMP** inicia `MODE_MAZE`.
+  - El boton **STOP** detiene los motores.
+
+En ambos firmwares se usa la misma red `AUS_KIM_TEST`, clave `AUSKIM2026`.
+
+### Sincronizacion automatica
+
+**Siempre modificar el Test Suite**: es la unica fuente del programa. El firmware Race es generado y NO se debe editar a mano.
+
+Cada push que modifique el `.ino` del Test Suite ejecuta el workflow:
+`.github/workflows/sincronizar_race.yml`.
+
+El workflow regenera el `.ino` de carrera mediante `tools/generar_aus_kim_race.py` y guarda los cambios automaticamente en GitHub.
+
+Tambien se puede regenerar localmente desde la raiz del repositorio:
+
+```bash
+python tools/generar_aus_kim_race.py
+```
+
+Esto asegura que Race tenga el ultimo PID de pared, deteccion de sensores, manejo de encoders, giros y calibraciones **definidas en el codigo** del Test Suite. Los ajustes hechos solo en los formularios web son temporales en RAM: para pasarlos al firmware de carrera hay que actualizar sus valores iniciales en el Test Suite y subir el cambio a GitHub. Generar o actualizar el archivo de GitHub NO reprograma automaticamente el ESP32-S3: volver a cargar el `.ino` de carrera cuando se modifique el programa.
+
+**Seguridad:** el firmware conserva el boton STOP y el corte automatico si pierde la conexion con la pagina web; mantener la pagina abierta durante la carrera.
