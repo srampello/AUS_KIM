@@ -276,6 +276,24 @@ Panel: http://192.168.4.1
 
 Al cambiar de pestaña/modo, el firmware detiene los motores por seguridad. Tambien mantiene un fail-safe de comunicacion web.
 
+### Logo RMP separado del firmware
+
+El logo se guarda como `rmp_logo.h` junto al sketch, usando Base64 en memoria de programa (`PROGMEM`). Esto elimina las miles de lineas de imagen incrustada del `.ino` sin perder el funcionamiento offline.
+
+```text
+firmware/
+├── 05_test_suite/AUS_KIM_TEST_SUITE/
+│   ├── AUS_KIM_TEST_SUITE.ino
+│   └── rmp_logo.h             # Fuente del logo
+└── 06_race/AUS_KIM_RACE/
+    ├── AUS_KIM_RACE.ino       # Generado automaticamente
+    └── rmp_logo.h             # Copia sincronizada
+```
+
+Arduino requiere que cada archivo `.ino` este dentro de una carpeta con el mismo nombre. El archivo `.h` tiene que permanecer al lado del `.ino` correspondiente. La pagina solicita el logo al propio ESP32 mediante `/api/rmp-logo-b64`, sin necesitar Internet.
+
+Si se cambia el logo del Test Suite, GitHub Actions sincroniza tambien `rmp_logo.h` de carrera. El logo NO se edita directamente dentro de los archivos generados.
+
 ## Etapa 06 - Race Control RMP (largada)
 
 Dos interfaces, **un solo codigo de navegacion**:
