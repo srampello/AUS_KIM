@@ -126,7 +126,9 @@ enum TimedTestAction : uint8_t {
   TIMED_NONE = 0,
   TIMED_FORWARD,
   TIMED_LEFT_90,
-  TIMED_RIGHT_90
+  TIMED_RIGHT_90,
+  TIMED_CURVE_LEFT,
+  TIMED_CURVE_RIGHT
 };
 
 enum EncoderTestAction : uint8_t {
@@ -911,6 +913,8 @@ const char* timedTestName(TimedTestAction action) {
     case TIMED_FORWARD:  return "AVANCE CORTO";
     case TIMED_LEFT_90:  return "GIRO IZQUIERDA";
     case TIMED_RIGHT_90: return "GIRO DERECHA";
+    case TIMED_CURVE_LEFT:  return "CURVA ABIERTA IZQUIERDA";
+    case TIMED_CURVE_RIGHT: return "CURVA ABIERTA DERECHA";
     default:             return "NINGUNA";
   }
 }
@@ -928,6 +932,10 @@ void runTimedTest() {
   if (timedTestAction == TIMED_FORWARD) duration = (uint32_t)cfg.openingAdvanceMs;
   if (timedTestAction == TIMED_LEFT_90) duration = (uint32_t)cfg.turn90LeftMs;
   if (timedTestAction == TIMED_RIGHT_90) duration = (uint32_t)cfg.turn90RightMs;
+  if (timedTestAction == TIMED_CURVE_LEFT)
+    duration = (uint32_t)roundf(cfg.turn90LeftMs * cfg.openTurnLeftFactor);
+  if (timedTestAction == TIMED_CURVE_RIGHT)
+    duration = (uint32_t)roundf(cfg.turn90RightMs * cfg.openTurnRightFactor);
 
   // Frente tiene prioridad durante la prueba de avance.
   if (elapsed >= duration || (timedTestAction == TIMED_FORWARD && frontBlocked)) {
@@ -939,6 +947,8 @@ void runTimedTest() {
   if (timedTestAction == TIMED_FORWARD) setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
   else if (timedTestAction == TIMED_LEFT_90) setDrive(-cfg.turnPwm, +cfg.turnPwm);
   else if (timedTestAction == TIMED_RIGHT_90) setDrive(+cfg.turnPwm, -cfg.turnPwm);
+  else if (timedTestAction == TIMED_CURVE_LEFT) setDrive(0, +cfg.turnPwm);
+  else if (timedTestAction == TIMED_CURVE_RIGHT) setDrive(+cfg.turnPwm, 0);
 }
 
 // ============================================================
@@ -1325,8 +1335,10 @@ void handleTimedTest() {
   if (action == "FWD") timedTestAction = TIMED_FORWARD;
   else if (action == "L90") timedTestAction = TIMED_LEFT_90;
   else if (action == "R90") timedTestAction = TIMED_RIGHT_90;
+  else if (action == "CL") timedTestAction = TIMED_CURVE_LEFT;
+  else if (action == "CR") timedTestAction = TIMED_CURVE_RIGHT;
   else {
-    server.send(400, "text/plain", "action debe ser FWD, L90 o R90");
+    server.send(400, "text/plain", "action debe ser FWD, L90, R90, CL o CR");
     return;
   }
   timedTestStartMs = millis();
