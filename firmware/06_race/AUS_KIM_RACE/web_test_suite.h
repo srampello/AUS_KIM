@@ -646,7 +646,7 @@ button:active{transform:translateY(0) scale(.99)}
         </div>
 
         <div class="hint" id="mazeHandDescription">
-          Pared derecha: PWM 165; apertura derecha confirmada en ADC menor a 1750. Frena 500 ms, intenta avanzar 15 cm por tiempo y gira derecha. Frente desde ADC 1650: si no hay salida derecha, gira izquierda. Si el frente aparece durante el avance, frena y toma la salida derecha sin completar el recorrido.
+          Pared derecha: PWM 165 y PID. Apertura derecha (ADC menor a 1750): avance breve en la esquina y curva abierta derecha SIN marcha atrás. Frente bloqueado (ADC 1650) sin salida derecha: curva abierta izquierda. No se hace el avance largo de 15 cm ni se usan encoders para navegar.
         </div>
       </div>
 
@@ -656,19 +656,20 @@ button:active{transform:translateY(0) scale(.99)}
         <div class="field"><span>Confirmacion segundo frontal ADC</span><input class="cfg" id="frontConfirmAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
-        <div class="field"><span>Espera antes de avanzar (ms)</span><input class="cfg" id="openingWaitMs" type="number" min="0" max="1000" step="10"></div>
-        <div class="field"><span>Avance hacia apertura (ms; objetivo ~15 cm)</span><input class="cfg" id="openingAdvanceMs" type="number" min="30" max="2500" step="10"></div>
-        <div class="hint">500 ms es un punto de partida, NO equivale necesariamente a 15 cm. Calibrar con el robot y piso reales.</div>
+        <div class="field"><span>Entrada corta antes de curva (ms)</span><input class="cfg" id="cornerEntryMs" type="number" min="0" max="400" step="10"></div>
+        <div class="hint">Inicial: 100 ms. Evita seguir 15 cm de largo antes de doblar. Si aparece pared frontal, interrumpe esta entrada.</div>
       </div>
 
       <div class="card">
-        <h2>Giros temporizados (sin encoders)</h2>
+        <h2>Curvas abiertas (sin encoders)</h2>
         <div class="field"><span>PWM avance Maze</span><input class="cfg" id="basePwm" type="number" min="155" max="255" step="1"></div>
-        <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="120" max="255" step="1"></div>
-        <div class="field"><span>Giro 90° derecha (ms)</span><input class="cfg" id="turn90RightMs" type="number" min="50" max="1200" step="10"></div>
-        <div class="field"><span>Giro 90° izquierda (ms)</span><input class="cfg" id="turn90LeftMs" type="number" min="50" max="1200" step="10"></div>
-        <div class="field"><span>Espera antes de girar ante pared frontal (ms)</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1500" step="10"></div>
-        <div class="hint">160 ms por giro es un valor inicial. Calibrar por separado izquierda y derecha sobre el piso real.</div>
+        <div class="field"><span>PWM de la rueda exterior al girar</span><input class="cfg" id="turnPwm" type="number" min="120" max="255" step="1"></div>
+        <div class="field"><span>Giro original derecha (ms)</span><input class="cfg" id="turn90RightMs" type="number" min="50" max="1200" step="1"></div>
+        <div class="field"><span>Giro original izquierda (ms)</span><input class="cfg" id="turn90LeftMs" type="number" min="50" max="1200" step="1"></div>
+        <div class="field"><span>Factor curva derecha</span><input class="cfg" id="openTurnRightFactor" type="number" min="1" max="4" step="0.05"></div>
+        <div class="field"><span>Factor curva izquierda</span><input class="cfg" id="openTurnLeftFactor" type="number" min="1" max="4" step="0.05"></div>
+        <div class="field"><span>Espera por pared frontal (ms)</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1500" step="10"></div>
+        <div class="hint">Se conservan los tiempos medidos 166 ms (derecha) y 174 ms (izquierda). En la curva abierta avanza solo la rueda exterior: 166×2 = 332 ms derecha y 174×2 = 348 ms izquierda son estimaciones iniciales, no giros de 90° verificados.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -681,13 +682,17 @@ button:active{transform:translateY(0) scale(.99)}
       </div>
 
       <div class="card">
-        <h2>Calibrar SIN encoders</h2>
-        <div class="hint">Con el robot en un espacio despejado y apoyado en el piso: aplica los parametros de arriba y prueba cada maniobra por separado. El avance hacia la apertura y ambos giros se detienen automaticamente al terminar su tiempo.</div>
-        <button class="full start" onclick="testTimedMove('FWD')">PROBAR AVANCE CORTO</button>
-        <button class="full" onclick="testTimedMove('L90')">PROBAR GIRO 90° IZQUIERDA</button>
-        <button class="full" onclick="testTimedMove('R90')">PROBAR GIRO 90° DERECHA</button>
+        <h2>Probar las nuevas curvas</h2>
+        <div class="hint">Primero probá las curvas con espacio libre alrededor del robot. Una rueda avanza y la interior se detiene. Ajustá los factores de arriba hasta que cada maniobra cambie la orientación aproximadamente 90°.</div>
+        <button class="full start" onclick="testTimedMove('CR')">PROBAR CURVA ABIERTA DERECHA</button>
+        <button class="full" onclick="testTimedMove('CL')">PROBAR CURVA ABIERTA IZQUIERDA</button>
         <button class="full stop" onclick="stopAll()">STOP</button>
-        <div class="hint">Prueba activa: <b id="timedTestState">NINGUNA</b>. Repetí ajustando ms y PWM hasta medir cerca de 15 cm de avance y 90° reales.</div>
+        <div class="hint">Prueba activa: <b id="timedTestState">NINGUNA</b>. Se detiene al completar el tiempo configurado.</div>
+        <div class="hint">Calibraciones anteriores de giro sobre eje (no usadas en Maze):</div>
+        <button class="full" onclick="testTimedMove('R90')">GIRO ANTERIOR DERECHA</button>
+        <button class="full" onclick="testTimedMove('L90')">GIRO ANTERIOR IZQUIERDA</button>
+        <div class="field"><span>Prueba recta anterior (ms; no usada en Maze)</span><input class="cfg" id="openingAdvanceMs" type="number" min="30" max="2500" step="10"></div>
+        <button class="full" onclick="testTimedMove('FWD')">PROBAR AVANCE ANTERIOR</button>
       </div>
 
       <div class="card">
@@ -812,8 +817,8 @@ function selectMazeHand(mode){
   document.getElementById('mazeHandRight').classList.toggle('active',mode==='MAZE');
   document.getElementById('mazeHandLeft').classList.toggle('active',mode==='MAZE_LEFT');
   document.getElementById('mazeHandDescription').textContent=mode==='MAZE'
-    ? 'Pared derecha: apertura ADC inferior a 1750 y prioridad derecha. Freno frontal ADC 1650; sin salida derecha gira izquierda. Apertura: 500 ms, avance objetivo 15 cm por tiempo, 300 ms y giro derecha.'
-    : 'Pared izquierda (solo para pruebas): apertura izquierda; frente bloqueado gira derecha. Avance a apertura con tiempo calibrable, no usa encoders.';
+    ? 'Pared derecha: PID 165. Apertura ADC menor a 1750: entrada corta y curva abierta derecha. Frente ADC 1650 sin salida derecha: curva abierta izquierda. No hay avance de 15 cm.'
+    : 'Pared izquierda (solo pruebas): seguimiento PID izquierdo. Entrada corta y curva abierta izquierda; frente sin salida izquierda: curva abierta derecha.';
 }
 function selectWallHand(mode){
   if(robotRunning)return;
@@ -938,8 +943,9 @@ async function applyConfig(){
   const ids=[
     'kp','ki','kd','targetRightAdc','leftKp','leftKi','leftKd','targetLeftAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
-    'rightOpenAdc','leftOpenAdc','openingWaitMs','openingAdvanceMs','openingLeftPwm','openingRightPwm',
-    'turnPwm','turn90RightMs','turn90LeftMs','decisionWaitMs'
+    'rightOpenAdc','leftOpenAdc','cornerEntryMs','openingLeftPwm','openingRightPwm',
+    'turnPwm','turn90RightMs','turn90LeftMs','openTurnRightFactor','openTurnLeftFactor','decisionWaitMs',
+    'openingAdvanceMs'
   ];
 
   const p=new URLSearchParams();
