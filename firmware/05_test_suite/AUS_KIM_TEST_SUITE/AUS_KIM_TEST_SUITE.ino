@@ -1482,7 +1482,7 @@ button:active{transform:translateY(0) scale(.99)}
 
   <div class="tabs">
     <button class="tabbtn active" id="tabBtnTest" onclick="showTab('test')">Sensores / Motores / Encoders</button>
-    <button class="tabbtn" id="tabBtnWall" onclick="showTab('wall')">PID pared derecha</button>
+    <button class="tabbtn" id="tabBtnWall" onclick="showTab('wall')">PID pared lateral</button>
     <button class="tabbtn" id="tabBtnMaze" onclick="showTab('maze')">Resolver laberinto</button>
     <button class="tabbtn" id="tabBtnEncoder" onclick="showTab('encoder')">Calibrar encoders</button>
   </div>
@@ -1553,7 +1553,7 @@ button:active{transform:translateY(0) scale(.99)}
         <button class="full stop" onclick="stopAll()">STOP</button>
 
         <div class="metric-grid" style="margin-top:10px">
-          <div class="metric"><div class="label">Lateral derecho</div><div class="value" id="wLR">0</div></div>
+          <div class="metric"><div class="label">Lateral de referencia</div><div class="value" id="wLR">0</div></div>
           <div class="metric"><div class="label">Objetivo</div><div class="value" id="wTarget">2400</div></div>
           <div class="metric"><div class="label">Error</div><div class="value" id="wError">0</div></div>
           <div class="metric"><div class="label">Correccion</div><div class="value" id="wCorrection">0</div></div>
@@ -1587,7 +1587,7 @@ button:active{transform:translateY(0) scale(.99)}
           <div class="metric"><div class="label">Frontal izquierdo</div><div class="value" id="wFL">0</div></div>
           <div class="metric"><div class="label">Frontal derecho</div><div class="value" id="wFR">0</div></div>
           <div class="metric"><div class="label">Lateral izquierdo</div><div class="value" id="wLL">0</div></div>
-          <div class="metric"><div class="label">Lateral derecho</div><div class="value" id="wLR2">0</div></div>
+          <div class="metric"><div class="label">Lateral de referencia</div><div class="value" id="wLR2">0</div></div>
         </div>
       </div>
 
