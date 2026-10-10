@@ -169,18 +169,22 @@ struct ControlConfig {
   int approachMinPwm = 140; // legacy
   int turnPwm = 180;
 
-  // Giros medidos por encoders. Quedan ajustables porque uno de los
-  // encoders no esta midiendo de forma totalmente confiable.
+  // Ticks de encoders reservados SOLO para pruebas manuales.
   int turn45RightTicks = 80;
   int turn45LeftTicks = 80;
   int turn90RightTicks = 120;
   int turn90LeftTicks = 125;
   int turn180Ticks = 250;
 
-  // Maniobra de apertura lateral:
-  // STOP 300 ms -> 5 cm recto -> STOP 300 ms -> giro -> STOP 300 ms.
+  // Apertura: frenar 500 ms -> avanzar por tiempo (~3 cm iniciales)
+  // -> frenar 300 ms -> girar por tiempo -> frenar 300 ms.
   int openingWaitMs = 500;
-  float openingAdvanceCm = 3.0f;
+  float openingAdvanceCm = 3.0f;  // referencia historica, NO mide recorrido
+  int openingAdvanceMs = 180;     // calibrar tiempo en pista
+  int openingLeftPwm = 180;       // ajuste independiente para motores distintos
+  int openingRightPwm = 180;
+  int turn90LeftMs = 240;        // punto de partida a calibrar
+  int turn90RightMs = 240;
   // Avance recto independiente del PID de pared derecha.
   float straightLeftTicksPerCm = 20.95f;
   float straightRightTicksPerCm = 20.95f;
@@ -217,12 +221,8 @@ const uint16_t BRAKE_SETTLE_MS = 100;
 const int MAZE_FORWARD_MIN_PWM = 120;
 const int MAZE_FORWARD_MAX_PWM = 255;
 
-// Avance recto de 5 cm: evita aplicar PID mientras no hay pared derecha.
-const int OPENING_ADVANCE_PWM = 180;
+// Maze: los tiempos de maniobra estan acotados desde ControlConfig.
 
-// Seguridad si uno de los encoders no reporta movimiento.
-const uint16_t OPENING_ADVANCE_TIMEOUT_MS = 1800;
-const uint16_t TURN_ENCODER_TIMEOUT_MS = 2200;
 const uint8_t EVENT_CONFIRM_SAMPLES = 3;
 
 // ============================================================
@@ -816,48 +816,32 @@ void runMaze() {
         break;
       }
       if (now - stateStartMs >= (uint32_t)cfg.openingWaitMs) {
-        captureMoveStart();
+
         enterState(STATE_SIDE_OPEN_ADVANCE);
       }
       break;
 
-    case STATE_SIDE_OPEN_ADVANCE: {
-      // Avance de 3 cm medido con encoders y correccion individual de motores.
-      // Si aparece pared frontal, detener primero.
+    case STATE_SIDE_OPEN_ADVANCE:
+      // Avance corto POR TIEMPO, sin depender de los encoders.
+      // El frenado frontal mantiene prioridad durante este avance.
       if (frontBlocked) {
         stopMotors();
         frontLeftTurns = 0;
         enterState(STATE_FRONT_WAIT);
         break;
       }
-
-      uint32_t targetTicks =
-        (uint32_t)roundf(cfg.openingAdvanceCm * TICKS_PER_CM);
-      if (getMoveStraightCm() >= cfg.openingAdvanceCm) {
+      if (now - stateStartMs >= (uint32_t)cfg.openingAdvanceMs) {
         stopMotors();
         enterState(STATE_SIDE_OPEN_WAIT_TURN);
         break;
       }
-
-      if (now - stateStartMs >= OPENING_ADVANCE_TIMEOUT_MS) {
-        // No seguir a ciegas si un encoder esta fallando.
-        stopReason = "TIMEOUT_AVANCE_3CM_t=" + String(getMoveTicksAverage()) + "_obj="
-                   + String((uint32_t)roundf(cfg.openingAdvanceCm * TICKS_PER_CM));
-        Serial.println("AUS_KIM STOP: " + stopReason);
-        stopMotors();
-        running = false;
-        robotState = STATE_STOPPED;
-        break;
-      }
-
-      driveStraightEncoders(OPENING_ADVANCE_PWM);
+      setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
       break;
-    }
 
     case STATE_SIDE_OPEN_WAIT_TURN:
       stopMotors();
       if (now - stateStartMs >= 300UL) {
-        captureMoveStart();
+
         enterState(leftHand ? STATE_TURN_LEFT : STATE_TURN_RIGHT);
       }
       break;
@@ -867,52 +851,29 @@ void runMaze() {
       // Cuando el frente esta bloqueado, girar al lado opuesto del seguimiento.
       if (now - stateStartMs >= (uint32_t)cfg.decisionWaitMs) {
         if (frontLeftTurns < 2) frontLeftTurns++;
-        captureMoveStart();
+
         enterState(leftHand ? STATE_TURN_RIGHT : STATE_TURN_LEFT);
       }
       break;
 
-    case STATE_TURN_LEFT: {
-      uint32_t ticks = getMoveTicksSum();
-      if (ticks >= (uint32_t)cfg.turn90LeftTicks) {
+    case STATE_TURN_LEFT:
+      // Giro por tiempo, calibrable, no requiere encoder.
+      if (now - stateStartMs >= (uint32_t)cfg.turn90LeftMs) {
         stopMotors();
         enterState(STATE_POST_TURN_WAIT);
         break;
       }
-
-      if (now - stateStartMs >= TURN_ENCODER_TIMEOUT_MS) {
-        stopReason = "TIMEOUT_GIRO_IZQ_t=" + String(ticks) + "_obj=" + String(cfg.turn90LeftTicks);
-        Serial.println("AUS_KIM STOP: " + stopReason);
-        stopMotors();
-        running = false;
-        robotState = STATE_STOPPED;
-        break;
-      }
-
       setDrive(-cfg.turnPwm, +cfg.turnPwm);
       break;
-    }
 
-    case STATE_TURN_RIGHT: {
-      uint32_t ticks = getMoveTicksSum();
-      if (ticks >= (uint32_t)cfg.turn90RightTicks) {
+    case STATE_TURN_RIGHT:
+      if (now - stateStartMs >= (uint32_t)cfg.turn90RightMs) {
         stopMotors();
         enterState(STATE_POST_TURN_WAIT);
         break;
       }
-
-      if (now - stateStartMs >= TURN_ENCODER_TIMEOUT_MS) {
-        stopReason = "TIMEOUT_GIRO_DER_t=" + String(ticks) + "_obj=" + String(cfg.turn90RightTicks);
-        Serial.println("AUS_KIM STOP: " + stopReason);
-        stopMotors();
-        running = false;
-        robotState = STATE_STOPPED;
-        break;
-      }
-
       setDrive(+cfg.turnPwm, -cfg.turnPwm);
       break;
-    }
 
     case STATE_POST_TURN_WAIT:
       stopMotors();
@@ -922,7 +883,7 @@ void runMaze() {
 
       // Si sigue detectando pared frontal, no cancelar la carrera.
       // Repetir evaluacion tras la pausa configurada y girar otra vez.
-      // El tiempo de pausa y los encoders evitan giros encadenados sin control.
+      // La pausa y el limite temporal de cada giro impiden giros sin fin.
       if (frontBlocked) {
         Serial.println(leftHand ? "AUS_KIM: frente bloqueado; buscando salida a derecha." : "AUS_KIM: frente bloqueado despues del giro; buscando salida a izquierda.");
         enterState(STATE_FRONT_WAIT);
@@ -1112,6 +1073,11 @@ void handleStatus() {
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"openingWaitMs\":" + String(cfg.openingWaitMs) + ",";
   json += "\"openingAdvanceCm\":" + String(cfg.openingAdvanceCm, 1) + ",";
+  json += "\"openingAdvanceMs\":" + String(cfg.openingAdvanceMs) + ",";
+  json += "\"openingLeftPwm\":" + String(cfg.openingLeftPwm) + ",";
+  json += "\"openingRightPwm\":" + String(cfg.openingRightPwm) + ",";
+  json += "\"turn90LeftMs\":" + String(cfg.turn90LeftMs) + ",";
+  json += "\"turn90RightMs\":" + String(cfg.turn90RightMs) + ",";
   json += "\"straightLeftTicksPerCm\":" + String(cfg.straightLeftTicksPerCm, 3) + ",";
   json += "\"straightRightTicksPerCm\":" + String(cfg.straightRightTicksPerCm, 3) + ",";
   json += "\"straightKp\":" + String(cfg.straightKp, 2) + ",";
@@ -1384,6 +1350,16 @@ void handleConfig() {
 
   if (server.hasArg("openingAdvanceCm"))
     cfg.openingAdvanceCm = constrain(server.arg("openingAdvanceCm").toFloat(), 1.0f, 30.0f);
+  if (server.hasArg("openingAdvanceMs"))
+    cfg.openingAdvanceMs = constrain(server.arg("openingAdvanceMs").toInt(), 30, 800);
+  if (server.hasArg("openingLeftPwm"))
+    cfg.openingLeftPwm = constrain(server.arg("openingLeftPwm").toInt(), MIN_MOVING_PWM, 255);
+  if (server.hasArg("openingRightPwm"))
+    cfg.openingRightPwm = constrain(server.arg("openingRightPwm").toInt(), MIN_MOVING_PWM, 255);
+  if (server.hasArg("turn90LeftMs"))
+    cfg.turn90LeftMs = constrain(server.arg("turn90LeftMs").toInt(), 50, 1200);
+  if (server.hasArg("turn90RightMs"))
+    cfg.turn90RightMs = constrain(server.arg("turn90RightMs").toInt(), 50, 1200);
   if (server.hasArg("straightLeftTicksPerCm"))
     cfg.straightLeftTicksPerCm = constrain(server.arg("straightLeftTicksPerCm").toFloat(), 1.0f, 500.0f);
   if (server.hasArg("straightRightTicksPerCm"))
