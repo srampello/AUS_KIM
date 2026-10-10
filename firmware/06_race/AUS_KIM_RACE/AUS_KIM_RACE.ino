@@ -149,10 +149,10 @@ enum EncoderTestAction : uint8_t {
 enum RobotState : uint8_t {
   STATE_STOPPED = 0,
   STATE_FOLLOW,
-  STATE_CORNER_ENTRY,
+  STATE_WALL_LOST_CLEARANCE,
+  STATE_SEARCH_RIGHT,
   STATE_FRONT_WAIT,
   STATE_TURN_LEFT,
-  STATE_TURN_RIGHT,
   STATE_POST_TURN_WAIT
 };
 
@@ -180,8 +180,15 @@ struct ControlConfig {
   int frontConfirmAdc = 1650;
 
   // Apertura derecha confirmada cuando lateral derecho baja de 1750.
-  int rightOpenAdc = 1750;
+  int rightOpenAdc = 1750; // diagnostico, NO dispara giros del Maze
   int leftOpenAdc = 1600;
+  // Pared derecha solo se considera perdida tras 100 ms continuos < 1300.
+  int rightLostAdc = 1300;
+  int rightLostConfirmMs = 100;
+  int rightRecoverAdc = 1500; // histeresis para retomar seguimiento PID
+  int rightClearanceMs = 150; // continuar recto para pasar la esquina
+  int searchRightOuterPwm = 195; // izquierda: motor exterior
+  int searchRightInnerPwm = 155; // derecha: motor interior
 
   // Seguimiento/giro.
   int approachMinPwm = 140; // legacy
@@ -279,6 +286,9 @@ uint8_t frontWallStableCount = 0;
 uint8_t rightOpenStableCount = 0;
 uint8_t rightWallStableCount = 0;
 bool rightOpeningArmed = false;
+bool rightLossPending = false;
+uint32_t rightLossStartedMs = 0;
+uint8_t rightRecoveredSamples = 0;
 uint8_t leftOpenStableCount = 0, leftWallStableCount = 0;
 bool leftOpeningArmed = false;
 
@@ -763,11 +773,11 @@ int calculateApproachPwm() {
 
 const char* stateName(RobotState s) {
   switch (s) {
-    case STATE_FOLLOW: return (activeMode == MODE_WALL_LEFT || activeMode == MODE_MAZE_LEFT) ? "PID PARED IZQUIERDA" : "PID PARED DERECHA";
-    case STATE_CORNER_ENTRY: return activeMode == MODE_MAZE_LEFT ? "ENTRADA CURVA IZQUIERDA" : "ENTRADA CURVA DERECHA";
+    case STATE_FOLLOW:               return "PID PARED DERECHA";
+    case STATE_WALL_LOST_CLEARANCE:  return "PERDIDA CONFIRMADA / RECTO";
+    case STATE_SEARCH_RIGHT:         return "BUSCANDO PARED DERECHA";
     case STATE_FRONT_WAIT:           return "PARED FRONTAL / FRENO";
-    case STATE_TURN_LEFT:            return "GIRO ABIERTO IZQUIERDA";
-    case STATE_TURN_RIGHT:           return "GIRO ABIERTO DERECHA";
+    case STATE_TURN_LEFT:            return "GIRO IZQUIERDA POR FRENTE";
     case STATE_POST_TURN_WAIT:       return "PAUSA POST GIRO";
     case STATE_STOPPED:
     default:                         return "DETENIDO";
@@ -792,117 +802,127 @@ void enterState(RobotState newState) {
   resetPid();
 }
 
-// Regla simple de la pared: derecha en Race, izquierda solo para pruebas.
-// 1. Seguir pared por PID. 2. Apertura lateral -> entrada corta + curva abierta.
-// 3. Si frente bloqueado y sin salida lateral -> curva abierta al lado contrario.
-// 4. En cada curva avanza solo la rueda exterior: NO girar sobre el eje.
-// Duraciones de curva = tiempo 90 del ultimo commit x factor calibrable.
-// No hay encoders ni recorridos largos de 15 cm en el modo Maze.
+// Algoritmo SIMPLE y exclusivamente por pared derecha.
+// Pared perdida = ADC <1300 durante 100 ms ININTERRUMPIDOS.
+// El primer tramo bajo umbral es RECTO, sin saturacion del PID.
+// Al confirmar perdida, despejar esquina recto y buscar pared con curva
+// progresiva (ambos motores hacia adelante), nunca pivotar sobre arista.
+// Frente bloqueado = frenar y girar 90 a izquierda por tiempo, sin encoders.
+void resetRightLoss() {
+  rightLossPending = false;
+  rightLossStartedMs = 0;
+  rightRecoveredSamples = 0;
+}
+
+bool rightWallRecovered() {
+  if (sLR.filtered >= cfg.rightRecoverAdc) {
+    if (rightRecoveredSamples < EVENT_CONFIRM_SAMPLES) rightRecoveredSamples++;
+  } else {
+    rightRecoveredSamples = 0;
+  }
+  return rightRecoveredSamples >= EVENT_CONFIRM_SAMPLES;
+}
+
 void runMaze() {
   uint32_t now = millis();
-  bool leftHand = activeMode == MODE_MAZE_LEFT;
-  uint8_t stableSideOpening = leftHand ? leftOpenStableCount : rightOpenStableCount;
-  uint8_t stableSideWall = leftHand ? leftWallStableCount : rightWallStableCount;
-  bool sideOpen = leftHand ? leftOpen : rightOpen;
-  bool &openingArmed = leftHand ? leftOpeningArmed : rightOpeningArmed;
 
   switch (robotState) {
     case STATE_STOPPED:
+      resetRightLoss();
       enterState(STATE_FOLLOW);
       break;
 
-    case STATE_FOLLOW: {
-      if (stableSideWall >= EVENT_CONFIRM_SAMPLES) openingArmed = true;
-
-      // La apertura confirmada tiene prioridad frente a la pared frontal.
-      // Si el frente esta cerrado, se puede girar hacia un hueco lateral
-      // confirmado aun si no habiamos visto pared lateral al arrancar.
-      if (stableSideOpening >= EVENT_CONFIRM_SAMPLES &&
-          (openingArmed || frontBlocked)) {
-        openingArmed = false;
-        if (frontBlocked) {
-          stopMotors();
-          enterState(leftHand ? STATE_TURN_LEFT : STATE_TURN_RIGHT);
-        } else {
-          // Pasar apenas la esquina; NO avanzar 15 cm antes de girar.
-          enterState(STATE_CORNER_ENTRY);
-        }
-        break;
-      }
-
+    case STATE_FOLLOW:
       if (frontBlocked) {
         stopMotors();
+        resetRightLoss();
         enterState(STATE_FRONT_WAIT);
         break;
       }
 
-      if (sideOpen) {
-        // Sin pared cercana, seguir adelante hasta localizar otra pared.
-        resetPid();
-        setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
-      } else if (leftHand) {
-        followLeftWallAtPwm(cfg.basePwm);
-      } else {
-        followRightWallAtPwm(cfg.basePwm);
-      }
-      break;
-    }
+      if (sLR.filtered < cfg.rightLostAdc) {
+        if (!rightLossPending) {
+          rightLossPending = true;
+          rightLossStartedMs = now;
+        }
 
-    case STATE_CORNER_ENTRY:
-      // Entrada corta y continua, no detenerse 500 ms en la interseccion.
-      if (frontBlocked || now - stateStartMs >= (uint32_t)cfg.cornerEntryMs) {
-        if (frontBlocked) stopMotors(); // Nunca avanzar contra una pared.
-        enterState(leftHand ? STATE_TURN_LEFT : STATE_TURN_RIGHT);
-      } else {
-        setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
+        // Esperar 100 ms de lectura continua, SIN comenzar a doblar.
+        // PID no actua con un sensor sin pared: mientras tanto recto.
+        if (now - rightLossStartedMs < (uint32_t)cfg.rightLostConfirmMs) {
+          resetPid();
+          setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
+          break;
+        }
+
+        rightRecoveredSamples = 0;
+        enterState(STATE_WALL_LOST_CLEARANCE);
+        break;
       }
+
+      // Cualquier muestra >= 1300 cancela completamente el contador.
+      rightLossPending = false;
+      rightLossStartedMs = 0;
+      followRightWallAtPwm(cfg.basePwm);
+      break;
+
+    case STATE_WALL_LOST_CLEARANCE:
+      if (frontBlocked) {
+        stopMotors();
+        resetRightLoss();
+        enterState(STATE_FRONT_WAIT);
+        break;
+      }
+      if (rightWallRecovered()) {
+        resetRightLoss();
+        enterState(STATE_FOLLOW);
+        break;
+      }
+      if (now - stateStartMs >= (uint32_t)cfg.rightClearanceMs) {
+        rightRecoveredSamples = 0;
+        enterState(STATE_SEARCH_RIGHT);
+        break;
+      }
+      // Dejar atras la esquina antes de inclinar la trayectoria.
+      setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
+      break;
+
+    case STATE_SEARCH_RIGHT:
+      if (frontBlocked) {
+        stopMotors();
+        resetRightLoss();
+        enterState(STATE_FRONT_WAIT);
+        break;
+      }
+      if (rightWallRecovered()) {
+        resetRightLoss();
+        enterState(STATE_FOLLOW);
+        break;
+      }
+      // Curva amplia: ambas ruedas adelante, izquierda algo mas rapida.
+      setDrive(cfg.searchRightOuterPwm, cfg.searchRightInnerPwm);
       break;
 
     case STATE_FRONT_WAIT:
       stopMotors();
-      // Frente cerrado: priorizar salida derecha en Race.
-      if (stableSideOpening >= EVENT_CONFIRM_SAMPLES) {
-        openingArmed = false;
-        enterState(leftHand ? STATE_TURN_LEFT : STATE_TURN_RIGHT);
-      } else if (now - stateStartMs >= (uint32_t)cfg.decisionWaitMs) {
-        enterState(leftHand ? STATE_TURN_RIGHT : STATE_TURN_LEFT);
+      if (now - stateStartMs >= (uint32_t)cfg.decisionWaitMs) {
+        enterState(STATE_TURN_LEFT);
       }
       break;
 
-    case STATE_TURN_RIGHT: {
-      // Giro ABIERTO: rueda izquierda hacia adelante, derecha parada.
-      // 166 ms ultimo commit (giro sobre eje); x factor para giro abierto.
-      uint32_t duration = (uint32_t)roundf(cfg.turn90RightMs * cfg.openTurnRightFactor);
-      if (now - stateStartMs >= duration) {
+    case STATE_TURN_LEFT:
+      // Calibracion conservada: 174 ms, giro en el lugar ante frente.
+      if (now - stateStartMs >= (uint32_t)cfg.turn90LeftMs) {
         stopMotors();
         enterState(STATE_POST_TURN_WAIT);
-      } else {
-        setDrive(+cfg.turnPwm, 0);
+        break;
       }
+      setDrive(-cfg.turnPwm, +cfg.turnPwm);
       break;
-    }
-
-    case STATE_TURN_LEFT: {
-      // Giro ABIERTO: rueda derecha hacia adelante, izquierda parada.
-      // 174 ms ultimo commit (giro sobre eje); x factor para giro abierto.
-      uint32_t duration = (uint32_t)roundf(cfg.turn90LeftMs * cfg.openTurnLeftFactor);
-      if (now - stateStartMs >= duration) {
-        stopMotors();
-        enterState(STATE_POST_TURN_WAIT);
-      } else {
-        setDrive(0, +cfg.turnPwm);
-      }
-      break;
-    }
 
     case STATE_POST_TURN_WAIT:
-      // Releer sensores tras una pausa corta y seguir buscando pared.
       stopMotors();
       if (now - stateStartMs >= BRAKE_SETTLE_MS) {
-        rightOpenStableCount = 0;
-        leftOpenStableCount = 0;
-        rightOpeningArmed = false;
-        leftOpeningArmed = false;
+        resetRightLoss();
         enterState(STATE_FOLLOW);
       }
       break;
@@ -1052,6 +1072,8 @@ void handleStatus() {
 
   json += "{";
   json += "\"running\":" + String(running ? "true" : "false") + ",";
+  json += "\"rightLossPending\":" + String(rightLossPending ? "true" : "false") + ",";
+  json += "\"rightLossElapsedMs\":" + String(rightLossPending ? millis() - rightLossStartedMs : 0UL) + ",";
   json += "\"autonomousRace\":" + String(autonomousRace ? "true" : "false") + ",";
   json += "\"raceElapsedMs\":" + String(autonomousRace && running ? millis() - autonomousRaceStartMs : 0UL) + ",";
   json += "\"timedTestAction\":\"" + String(timedTestName(timedTestAction)) + "\",";
@@ -1131,6 +1153,12 @@ void handleStatus() {
   json += "\"frontConfirmAdc\":" + String(cfg.frontConfirmAdc) + ",";
   json += "\"approachMinPwm\":" + String(cfg.approachMinPwm) + ",";
   json += "\"rightOpenAdc\":" + String(cfg.rightOpenAdc) + ",";
+  json += "\"rightLostAdc\":" + String(cfg.rightLostAdc) + ",";
+  json += "\"rightLostConfirmMs\":" + String(cfg.rightLostConfirmMs) + ",";
+  json += "\"rightRecoverAdc\":" + String(cfg.rightRecoverAdc) + ",";
+  json += "\"rightClearanceMs\":" + String(cfg.rightClearanceMs) + ",";
+  json += "\"searchRightOuterPwm\":" + String(cfg.searchRightOuterPwm) + ",";
+  json += "\"searchRightInnerPwm\":" + String(cfg.searchRightInnerPwm) + ",";
   json += "\"leftOpenAdc\":" + String(cfg.leftOpenAdc) + ",";
   json += "\"openingWaitMs\":" + String(cfg.openingWaitMs) + ",";
   json += "\"openingAdvanceCm\":" + String(cfg.openingAdvanceCm, 1) + ",";
@@ -1170,6 +1198,7 @@ void handleMode() {
   String mode = server.arg("mode");
 
   // Siempre se detiene al cambiar de modo.
+  resetRightLoss();
   autonomousRace = false;
   localStopPressPending = false;
   timedTestAction = TIMED_NONE;
@@ -1257,6 +1286,7 @@ void handleRun() {
       leftWallStableCount = 0;
       leftOpeningArmed = false;
       frontLeftTurns = 0;
+      resetRightLoss();
       enterState(STATE_FOLLOW);
     } else {
       robotState = STATE_FOLLOW;
@@ -1466,6 +1496,18 @@ void handleConfig() {
 
   if (server.hasArg("rightOpenAdc"))
     cfg.rightOpenAdc = constrain(server.arg("rightOpenAdc").toInt(), 0, 4095);
+  if (server.hasArg("rightLostAdc"))
+    cfg.rightLostAdc = constrain(server.arg("rightLostAdc").toInt(), 0, 4095);
+  if (server.hasArg("rightLostConfirmMs"))
+    cfg.rightLostConfirmMs = constrain(server.arg("rightLostConfirmMs").toInt(), 20, 1000);
+  if (server.hasArg("rightRecoverAdc"))
+    cfg.rightRecoverAdc = constrain(server.arg("rightRecoverAdc").toInt(), 0, 4095);
+  if (server.hasArg("rightClearanceMs"))
+    cfg.rightClearanceMs = constrain(server.arg("rightClearanceMs").toInt(), 0, 600);
+  if (server.hasArg("searchRightOuterPwm"))
+    cfg.searchRightOuterPwm = constrain(server.arg("searchRightOuterPwm").toInt(), MIN_MOVING_PWM, 255);
+  if (server.hasArg("searchRightInnerPwm"))
+    cfg.searchRightInnerPwm = constrain(server.arg("searchRightInnerPwm").toInt(), MIN_MOVING_PWM, 255);
 
   if (server.hasArg("leftOpenAdc"))
     cfg.leftOpenAdc = constrain(server.arg("leftOpenAdc").toInt(), 0, 4095);
@@ -1543,6 +1585,7 @@ void handlePing() {
 }
 
 void handleStop() {
+  resetRightLoss();
   autonomousRace = false;
   localStopPressPending = false;
   timedTestAction = TIMED_NONE;
