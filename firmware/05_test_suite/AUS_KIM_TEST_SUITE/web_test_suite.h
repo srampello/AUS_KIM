@@ -699,6 +699,7 @@ button:active{transform:translateY(0) scale(.99)}
           <div class="metric"><div class="label">Frontal derecho</div><div class="value" id="mFR">0</div></div>
           <div class="metric"><div class="label">Lateral izquierdo</div><div class="value" id="mLL">0</div></div>
           <div class="metric"><div class="label">Lateral derecho</div><div class="value" id="mLR">0</div></div>
+          <div class="metric"><div class="label">Perdida derecha (ms)</div><div class="value" id="mRightLossMs">0</div></div>
           <div class="metric"><div class="label">Motor izquierdo</div><div class="value" id="mMotorL">0</div></div>
           <div class="metric"><div class="label">Motor derecho</div><div class="value" id="mMotorR">0</div></div>
           <div class="metric"><div class="label">Encoder izquierdo</div><div class="value" id="mEncL">0</div></div>
@@ -1006,6 +1007,7 @@ async function updateStatus(){
     document.getElementById('mazeState').textContent=(d.mode==='MAZE'||d.mode==='MAZE_LEFT') ? d.state : 'DETENIDO';
     document.getElementById('mazeStopReason').textContent=d.stopReason||'NINGUNA';
     document.getElementById('mFrontFlag').textContent=d.flags.frontBlocked?'PARED':'LIBRE';
+    document.getElementById('mRightLossMs').textContent=d.rightLossElapsedMs||0;
     document.getElementById('mRightFlag').textContent=d.flags.rightOpen?'LIBRE':'PARED';
     document.getElementById('mLeftFlag').textContent=d.flags.leftOpen?'LIBRE':'PARED';
     setSensor('m',d);
