@@ -63,7 +63,7 @@ footer{margin-top:34px;font-size:10px;font-weight:700;letter-spacing:.18em;color
   <p class="stateDetail" id="detail">Estableciendo conexion con el robot...</p>
   <button id="stop" type="button" class="stop" onclick="stopRace()">■ STOP</button>
   <div class="notice" id="message" role="status" aria-live="polite"></div>
-  <footer>RMP</footer>
+  <footer>NEGRO / VIOLETA / BLANCO · RMP</footer>
 </main>
 <script>
 let busy=false;
