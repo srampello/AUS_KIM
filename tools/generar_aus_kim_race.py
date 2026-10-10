@@ -11,8 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "firmware/05_test_suite/AUS_KIM_TEST_SUITE/AUS_KIM_TEST_SUITE.ino"
 TARGET = ROOT / "firmware/06_race/AUS_KIM_RACE/AUS_KIM_RACE.ino"
-SOURCE_LOGO = SOURCE.parent / "rmp_logo.h"
-TARGET_LOGO = TARGET.parent / "rmp_logo.h"
+SHARED_HEADERS = ("rmp_logo.h", "web_test_suite.h", "web_race.h")
 
 ORIGINAL_ROOT = '''void handleRoot() {
   server.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
@@ -26,8 +25,8 @@ def main():
     test_suite = SOURCE.read_text(encoding="utf-8")
     if test_suite.count(ORIGINAL_ROOT) != 1:
         raise SystemExit("No se encontro una unica funcion handleRoot() en Test Suite")
-    if test_suite.count("const char RACE_HTML[] PROGMEM") != 1:
-        raise SystemExit("Falta la pantalla RACE_HTML en el Test Suite")
+    if test_suite.count('#include "web_test_suite.h"') != 1 or test_suite.count('#include "web_race.h"') != 1:
+        raise SystemExit("El Test Suite debe incluir ambas interfaces web externas")
     if 'server.on("/race", HTTP_GET, handleRace);' not in test_suite:
         raise SystemExit("Falta registrar el endpoint de carrera")
 
@@ -39,14 +38,17 @@ def main():
         "// La logica de manejo es IDENTICA al Test Suite. Solo cambia la portada.\n\n"
     )
     TARGET.parent.mkdir(parents=True, exist_ok=True)
-    # Se copia el mismo logo al sketch de carrera, sin rutas relativas.
-    if SOURCE_LOGO.exists():
-        logo_bytes = SOURCE_LOGO.read_bytes()
-        if not TARGET_LOGO.exists() or TARGET_LOGO.read_bytes() != logo_bytes:
-            TARGET_LOGO.write_bytes(logo_bytes)
-            print("Sincronizado logo:", TARGET_LOGO.relative_to(ROOT))
-    elif '#include "rmp_logo.h"' in test_suite:
-        raise SystemExit("Falta el header rmp_logo.h en Test Suite")
+    # Arduino requiere que los .h se encuentren junto a cada .ino.
+    # Test Suite es la fuente unica; sincronizar logo y ambas interfaces web.
+    for name in SHARED_HEADERS:
+        origin = SOURCE.parent / name
+        destination = TARGET.parent / name
+        if not origin.is_file():
+            raise SystemExit(f"Falta archivo fuente: {origin}")
+        content = origin.read_bytes()
+        if not destination.exists() or destination.read_bytes() != content:
+            destination.write_bytes(content)
+            print("Sincronizado:", destination.relative_to(ROOT))
 
     generated = header + race
     if TARGET.exists() and TARGET.read_text(encoding="utf-8") == generated:
