@@ -402,3 +402,20 @@ Estos son **valores conservadores de prueba, no mediciones calibradas**. Como lo
 
 El boton STOP y el corte por perdida de comunicacion Wi-Fi permanecen activos. Las configuraciones modificadas en la interfaz son temporales (RAM); para grabarlas de manera permanente, hay que cambiar los valores iniciales en el Test Suite y volver a cargar el firmware. El firmware de carrera se genera desde el Test Suite mediante el workflow de GitHub Actions.
 
+
+
+## Configuracion de carrera vigente: siempre pared derecha (10/10/2026)
+
+El firmware **AUS_KIM_RACE** inicia exclusivamente el modo `MAZE` (regla de mano derecha). El Test Suite conserva la variante izquierda solo para experimentacion y calibracion.
+
+- PWM base de avance: **165**, con un minimo de **155** PWM para evitar bloqueo de los motores.
+- Obstaculo frontal: ambos sensores Sharp deben confirmar **ADC >= 1650** durante varias muestras.
+- Apertura lateral derecha: **ADC < 1750**, confirmada y prioritaria frente a la pared frontal.
+- En una apertura derecha: parar **500 ms**, avanzar un tramo objetivo de **15 cm** sin encoders, esperar **300 ms**, girar a la derecha durante el tiempo calibrado y esperar **300 ms**.
+- Tiempo inicial del avance: **500 ms** a PWM izquierdo/derecho **165**. **ESTE VALOR NO ESTA CALIBRADO** y no equivale necesariamente a 15 cm. Se ajusta desde Test Suite con `openingAdvanceMs`, `openingLeftPwm` y `openingRightPwm`.
+- Ante pared frontal **sin** salida derecha confirmada: frenar, esperar `decisionWaitMs` y girar a izquierda. Si hay una salida derecha confirmada, no elegir izquierda.
+- Si aparece una pared frontal mientras realiza el avance de la apertura, el robot interrumpe inmediatamente el avance largo y prepara el giro hacia la salida elegida para evitar continuar de frente.
+- La navegacion sigue sin encoders; los tiempos de giro izquierdo/derecho permanecen configurables. No se han modificado sus calibraciones.
+- STOP manual y corte por perdida de comunicacion Wi-Fi permanecen activos.
+
+La pestaña Resolver laberinto del Test Suite muestra los nuevos umbrales y permite calibrar el avance de 15 cm aproximados sin necesidad de hacer una carrera completa. Los valores actualizados mediante navegador son temporales hasta grabar el firmware.
