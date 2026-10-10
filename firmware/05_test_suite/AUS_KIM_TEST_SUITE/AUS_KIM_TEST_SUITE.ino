@@ -1364,6 +1364,11 @@ button:active{transform:translateY(0) scale(.99)}
   background:var(--violet);
   box-shadow:0 0 14px var(--violet-glow);
 }
+.hand-tabs{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:12px 0 15px;padding:5px;background:#11101a;border:1px solid #403153;border-radius:13px}
+.hand-tabs button{font-size:12px;padding:12px 7px;background:#15121e;border-color:transparent;color:#bbb2cb}
+.hand-tabs button.active{background:linear-gradient(180deg,#8b5cf6,#6d28d9);color:white;box-shadow:0 5px 18px #6d28d944}
+.hand-tabs button:disabled{opacity:.6;cursor:not-allowed}
+[hidden]{display:none!important}
 .motor-buttons{
   display:grid;
   grid-template-columns:1fr 1fr 1fr;
@@ -1539,9 +1544,13 @@ button:active{transform:translateY(0) scale(.99)}
     <div class="grid">
 
       <div class="card">
-        <h2>Control PID pared derecha</h2>
+        <h2>Control PID lateral</h2>
+        <div class="hand-tabs" role="tablist" aria-label="Seleccion de pared para PID">
+          <button type="button" class="active" id="wallHandRight" onclick="selectWallHand('WALL')">PARED DERECHA</button>
+          <button type="button" id="wallHandLeft" onclick="selectWallHand('WALL_LEFT')">PARED IZQUIERDA</button>
+        </div>
         <div class="status" id="wallState">DETENIDO</div>
-        <button class="full start" onclick="startAutonomous('WALL')">INICIAR PID</button>
+        <button class="full start" onclick="startAutonomous(selectedWallMode)">INICIAR PID</button>
         <button class="full stop" onclick="stopAll()">STOP</button>
 
         <div class="metric-grid" style="margin-top:10px">
@@ -1556,10 +1565,18 @@ button:active{transform:translateY(0) scale(.99)}
 
       <div class="card">
         <h2>Parametros PID</h2>
-        <div class="field"><span>Kp</span><input class="cfg" id="kp" type="number" step="0.01"></div>
-        <div class="field"><span>Ki</span><input class="cfg" id="ki" type="number" step="0.001"></div>
-        <div class="field"><span>Kd</span><input class="cfg" id="kd" type="number" step="0.01"></div>
-        <div class="field"><span>Objetivo ADC derecha</span><input class="cfg" id="targetRightAdc" type="number" step="1"></div>
+        <div id="wallRightControls">
+          <div class="field"><span>Kp derecha</span><input class="cfg" id="kp" type="number" step="0.01"></div>
+          <div class="field"><span>Ki derecha</span><input class="cfg" id="ki" type="number" step="0.001"></div>
+          <div class="field"><span>Kd derecha</span><input class="cfg" id="kd" type="number" step="0.01"></div>
+          <div class="field"><span>Objetivo ADC derecha</span><input class="cfg" id="targetRightAdc" type="number" step="1"></div>
+        </div>
+        <div id="wallLeftControls" hidden>
+          <div class="field"><span>Kp izquierda</span><input class="cfg" id="leftKp" type="number" step="0.01"></div>
+          <div class="field"><span>Ki izquierda</span><input class="cfg" id="leftKi" type="number" step="0.001"></div>
+          <div class="field"><span>Kd izquierda</span><input class="cfg" id="leftKd" type="number" step="0.01"></div>
+          <div class="field"><span>Objetivo ADC izquierda</span><input class="cfg" id="targetLeftAdc" type="number" step="1"></div>
+        </div>
         <div class="field"><span>PWM base PID</span><input class="cfg" id="wallBasePwm" type="number" min="120" max="255" step="1"></div>
         <div class="field"><span>Correccion maxima</span><input class="cfg" id="maxCorrection" type="number" min="0" max="255" step="1"></div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
@@ -1585,10 +1602,14 @@ button:active{transform:translateY(0) scale(.99)}
     <div class="grid">
 
       <div class="card">
-        <h2>Maze Solver</h2>
+        <h2>Maze Solver · elegir pared</h2>
+        <div class="hand-tabs" role="tablist" aria-label="Seleccion de pared para laberinto">
+          <button type="button" class="active" id="mazeHandRight" onclick="selectMazeHand('MAZE')">PARED DERECHA</button>
+          <button type="button" id="mazeHandLeft" onclick="selectMazeHand('MAZE_LEFT')">PARED IZQUIERDA</button>
+        </div>
         <div class="status" id="mazeState">DETENIDO</div>
         <div class="hint">Ultima detencion: <b id="mazeStopReason">NINGUNA</b></div>
-        <button class="full start" onclick="startAutonomous('MAZE')">INICIAR LABERINTO</button>
+        <button class="full start" onclick="startAutonomous(selectedMazeMode)">INICIAR LABERINTO</button>
         <button class="full stop" onclick="stopAll()">STOP</button>
 
         <div class="flags">
@@ -1597,8 +1618,8 @@ button:active{transform:translateY(0) scale(.99)}
           <div class="flag">Izquierda (lectura)<b id="mLeftFlag">PARED</b></div>
         </div>
 
-        <div class="hint">
-          PID derecha a PWM configurable (inicial 180). Solo detecta APERTURA DERECHA (<1600) despues de haber visto pared derecha: frena 500 ms, avanza 3 cm, espera 300 ms, gira 90° derecha y espera 300 ms. Con pared frontal (1900), gira 90° izquierda; si sigue bloqueado, otros 90° izquierda para regresar. No usa apertura izquierda.
+        <div class="hint" id="mazeHandDescription">
+          Pared derecha: sigue PID derecho, prioriza apertura derecha (ADC &lt;1600) y, frente bloqueado, gira a izquierda. Apertura: frena 500 ms, avanza 3 cm y espera 300 ms antes de girar.
         </div>
       </div>
 
@@ -1607,8 +1628,9 @@ button:active{transform:translateY(0) scale(.99)}
         <div class="field"><span>STOP frontal ADC (≥)</span><input class="cfg" id="frontWallAdc" type="number" step="1"></div>
         <div class="field"><span>Confirmacion segundo frontal ADC</span><input class="cfg" id="frontConfirmAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
+        <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Espera antes de avanzar (ms)</span><input class="cfg" id="openingWaitMs" type="number" min="0" max="1000" step="10"></div>
-        <div class="field"><span>Avance antes de girar derecha (cm)</span><input class="cfg" id="openingAdvanceCm" type="number" min="1" max="30" step="0.5"></div>
+        <div class="field"><span>Avance antes de girar hacia apertura (cm)</span><input class="cfg" id="openingAdvanceCm" type="number" min="1" max="30" step="0.5"></div>
       </div>
 
       <div class="card">
@@ -1740,6 +1762,9 @@ button:active{transform:translateY(0) scale(.99)}
 
 <script>
 let activeTab='test';
+let selectedMazeMode='MAZE';
+let selectedWallMode='WALL';
+let robotRunning=false;
 let firstLoad=true;
 let activeManualMotor=null;
 
@@ -1747,6 +1772,23 @@ function panelName(tab){
   return tab.charAt(0).toUpperCase()+tab.slice(1);
 }
 
+function selectMazeHand(mode){
+  if(robotRunning)return; // Cambiar estrategia solo detenido.
+  selectedMazeMode=mode;
+  document.getElementById('mazeHandRight').classList.toggle('active',mode==='MAZE');
+  document.getElementById('mazeHandLeft').classList.toggle('active',mode==='MAZE_LEFT');
+  document.getElementById('mazeHandDescription').textContent=mode==='MAZE'
+    ? 'Pared derecha: prioriza apertura derecha y, frente bloqueado, gira a izquierda. Apertura: 500 ms, 3 cm y espera 300 ms.'
+    : 'Pared izquierda: prioriza apertura izquierda y, frente bloqueado, gira a derecha. Apertura: 500 ms, 3 cm y espera 300 ms.';
+}
+function selectWallHand(mode){
+  if(robotRunning)return;
+  selectedWallMode=mode;
+  document.getElementById('wallHandRight').classList.toggle('active',mode==='WALL');
+  document.getElementById('wallHandLeft').classList.toggle('active',mode==='WALL_LEFT');
+  document.getElementById('wallRightControls').hidden=mode!=='WALL';
+  document.getElementById('wallLeftControls').hidden=mode!=='WALL_LEFT';
+}
 async function showTab(tab){
   activeTab=tab;
 
@@ -1755,7 +1797,7 @@ async function showTab(tab){
     document.getElementById('tabBtn'+panelName(t)).classList.toggle('active',t===tab);
   });
 
-  const mode = tab==='test' ? 'TEST' : (tab==='wall' ? 'WALL' : (tab==='maze' ? 'MAZE' : 'ENCODER'));
+  const mode = tab==='test' ? 'TEST' : (tab==='wall' ? selectedWallMode : (tab==='maze' ? selectedMazeMode : 'ENCODER'));
   await fetch('/api/mode?mode='+mode,{cache:'no-store'});
   await updateStatus();
 }
@@ -1848,9 +1890,9 @@ function calculateTicksPerCm(){
 
 async function applyConfig(){
   const ids=[
-    'kp','ki','kd','targetRightAdc','basePwm','maxCorrection',
+    'kp','ki','kd','targetRightAdc','leftKp','leftKi','leftKd','targetLeftAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
-    'rightOpenAdc','openingWaitMs','openingAdvanceCm','turnPwm',
+    'rightOpenAdc','leftOpenAdc','openingWaitMs','openingAdvanceCm','turnPwm',
     'straightLeftTicksPerCm','straightRightTicksPerCm','straightKp','straightMaxCorrection',
     'turn45RightTicks','turn45LeftTicks',
     'turn90RightTicks','turn90LeftTicks','turn180Ticks','decisionWaitMs'
@@ -1891,6 +1933,10 @@ async function updateStatus(){
 
     document.getElementById('globalMode').textContent=d.mode;
     document.getElementById('globalState').textContent=d.state;
+    robotRunning=d.running===true;
+    ['wallHandRight','wallHandLeft','mazeHandRight','mazeHandLeft'].forEach(id=>{
+      document.getElementById(id).disabled=robotRunning;
+    });
 
     // TEST
     setSensor('t',d);
@@ -1907,18 +1953,18 @@ async function updateStatus(){
     document.getElementById('tEncRB').textContent=d.enc.rb;
 
     // WALL
-    document.getElementById('wallState').textContent=d.mode==='WALL' && d.running ? 'SIGUIENDO PARED' : 'DETENIDO';
-    document.getElementById('wLR').textContent=d.sensor.lr;
-    document.getElementById('wTarget').textContent=d.config.targetRightAdc;
+    document.getElementById('wallState').textContent=(d.mode==='WALL'||d.mode==='WALL_LEFT')&&d.running ? 'SIGUIENDO PARED' : 'DETENIDO';
+    document.getElementById('wLR').textContent=selectedWallMode==='WALL_LEFT' ? d.sensor.ll : d.sensor.lr;
+    document.getElementById('wTarget').textContent=selectedWallMode==='WALL_LEFT' ? d.config.targetLeftAdc : d.config.targetRightAdc;
     document.getElementById('wError').textContent=d.pid.error.toFixed(1);
     document.getElementById('wCorrection').textContent=d.pid.correction.toFixed(1);
     document.getElementById('wMotorL').textContent=d.motor.left;
     document.getElementById('wMotorR').textContent=d.motor.right;
     setSensor('w',d);
-    document.getElementById('wLR2').textContent=d.sensor.lr;
+    document.getElementById('wLR2').textContent=selectedWallMode==='WALL_LEFT' ? d.sensor.ll : d.sensor.lr;
 
     // MAZE
-    document.getElementById('mazeState').textContent=d.mode==='MAZE' ? d.state : 'DETENIDO';
+    document.getElementById('mazeState').textContent=(d.mode==='MAZE'||d.mode==='MAZE_LEFT') ? d.state : 'DETENIDO';
     document.getElementById('mazeStopReason').textContent=d.stopReason||'NINGUNA';
     document.getElementById('mFrontFlag').textContent=d.flags.frontBlocked?'PARED':'LIBRE';
     document.getElementById('mRightFlag').textContent=d.flags.rightOpen?'LIBRE':'PARED';
