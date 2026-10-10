@@ -326,3 +326,25 @@ python tools/generar_aus_kim_race.py
 Esto asegura que Race tenga el ultimo PID de pared, deteccion de sensores, manejo de encoders, giros y calibraciones **definidas en el codigo** del Test Suite. Los ajustes hechos solo en los formularios web son temporales en RAM: para pasarlos al firmware de carrera hay que actualizar sus valores iniciales en el Test Suite y subir el cambio a GitHub. Generar o actualizar el archivo de GitHub NO reprograma automaticamente el ESP32-S3: volver a cargar el `.ino` de carrera cuando se modifique el programa.
 
 **Seguridad:** el firmware conserva el boton STOP y el corte automatico si pierde la conexion con la pagina web; mantener la pagina abierta durante la carrera.
+
+
+### Navegacion reversible: pared derecha / pared izquierda
+
+El **Test Suite** y el **Race Control** tienen dos pestañas para seleccionar la estrategia antes de iniciar. Una sola maquina de estados contiene las maniobras, compartiendo los encoders y tiempos.
+
+| Estrategia | Sensor para PID | Apertura prioritaria | Giro con obstaculo frontal |
+| --- | --- | --- | --- |
+| Pared derecha (`MAZE`) | Sharp lateral derecho | Derecha | Izquierda |
+| Pared izquierda (`MAZE_LEFT`) | Sharp lateral izquierdo | Izquierda | Derecha |
+
+Al detectar una apertura en el lado seleccionado, el robot frena **500 ms**, avanza **3 cm** con compensacion por encoders, espera **300 ms**, gira 90 grados hacia la apertura y espera otros **300 ms**. En ambas estrategias se aplica la misma regla de continuar buscando salida si el frente sigue bloqueado. Se conservan el STOP manual y los limites de seguridad.
+
+La pestaña **PID pared lateral** del Test Suite permite iniciar `WALL` o `WALL_LEFT`, con calibraciones separadas:
+- Derecha: `kp`, `ki`, `kd`, `targetRightAdc`.
+- Izquierda: `leftKp`, `leftKi`, `leftKd`, `targetLeftAdc`.
+- Aperturas: `rightOpenAdc` y `leftOpenAdc`.
+
+Los valores de izquierda comienzan iguales a los de derecha solo como punto de partida: hay que calibrarlos en pista. El modo de carrera muestra ambas pestañas, el logo RMP central, el boton LARGAR y el STOP; el cambio de lado se bloquea mientras corre. El Test Suite conserva sus pruebas y parametros.
+
+**Importante:** los cambios realizados desde la pagina web no se graban en memoria persistente; para fijar una calibracion de competencia, modificar los valores predeterminados del Test Suite en GitHub y volver a cargar el firmware. La sincronizacion por GitHub Actions regenera `AUS_KIM_RACE.ino` automaticamente.
+
