@@ -438,3 +438,21 @@ El estado `/api/status` expone `autonomousRace` y `raceElapsedMs`. La pantalla R
 
 Solo el modo `MAZE` permite `autonomous=1`. El cambio esta disponible en Test Suite y Race porque el firmware Race se genera a partir del Test Suite y sincroniza sus archivos `.h`.
 
+
+
+## Nueva estrategia simple: curvas abiertas (10/10/2026)
+
+Tras las pruebas en pista, **Race siempre sigue pared derecha**. Se reemplazo la maquina de estados anterior (freno de 500 ms + avance de 15 cm + giro sobre su eje) por un ciclo corto:
+
+1. **Seguir la pared derecha** con el PID y PWM 165.
+2. Si se confirma apertura derecha (ADC menor a 1750), entrar apenas en la esquina durante `cornerEntryMs` (inicial 100 ms) y **girar a la derecha con curva abierta**: rueda izquierda hacia adelante, rueda derecha quieta. Si aparece pared frontal durante la entrada, dejar de avanzar recto y comenzar el giro.
+3. Ante pared frontal (dos Sharp confirmando ADC >= 1650) **sin salida derecha**, frenar y girar a la izquierda con curva abierta: rueda derecha hacia adelante, rueda izquierda quieta.
+4. Tras el giro, esperar 100 ms, volver a leer sensores y continuar buscando la pared derecha.
+
+**Se conservan exactamente las calibraciones del commit del usuario `cambio valores girar ms`:** `turn90RightMs = 166`, `turn90LeftMs = 174`, `turnPwm = 180` y `openingAdvanceMs = 650`. Los tiempos de giro originales fueron medidos sobre el eje (motores en sentidos contrarios). Para la nueva curva abierta, el firmware calcula la duracion `turn90RightMs * openTurnRightFactor` y `turn90LeftMs * openTurnLeftFactor`, factores iniciales 2.0. Asi, **332 ms derecha y 348 ms izquierda son estimaciones**, no mediciones de 90 grados en giro abierto.
+
+En Test Suite > Resolver laberinto hay botones para probar **curva abierta derecha e izquierda** de manera independiente, ademas de los ajustes `openTurnRightFactor`, `openTurnLeftFactor` y `cornerEntryMs`. Calibrar primero los giros con el robot en un espacio despejado. La prueba recta de 650 ms permanece disponible solo para diagnostico: el algoritmo Maze ya no la utiliza. Los encoders siguen excluidos del control autonomo.
+
+**Seguridad:** frenado frontal, STOP remoto, STOP fisico GPIO0 y limite de carrera autonoma de 120 segundos conservados. Si se pierde Wi-Fi, el modo Race continua, por lo que la parada local debe estar comprobada antes de competir.
+
+La variante por pared izquierda sigue disponible en el Test Suite para experimentacion y utiliza las maniobras espejadas. Esta es una simplificacion heuristica del seguimiento de pared; no se garantiza resolver cualquier laberinto ni girar exactamente 90 grados sin calibracion real.
