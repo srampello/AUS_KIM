@@ -646,7 +646,7 @@ button:active{transform:translateY(0) scale(.99)}
         </div>
 
         <div class="hint" id="mazeHandDescription">
-          Pared derecha: sigue PID derecho, prioriza la apertura derecha y, si hay pared frontal, gira a izquierda. Apertura: frena 500 ms, avanza por tiempo (aprox. 3 cm, calibrar) y espera 300 ms. No usa encoders para navegar.
+          Pared derecha: PWM 165; apertura derecha confirmada en ADC menor a 1750. Frena 500 ms, intenta avanzar 15 cm por tiempo y gira derecha. Frente desde ADC 1650: si no hay salida derecha, gira izquierda. Si el frente aparece durante el avance, frena y toma la salida derecha sin completar el recorrido.
         </div>
       </div>
 
@@ -657,13 +657,13 @@ button:active{transform:translateY(0) scale(.99)}
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Espera antes de avanzar (ms)</span><input class="cfg" id="openingWaitMs" type="number" min="0" max="1000" step="10"></div>
-        <div class="field"><span>Avance corto (ms, aproximadamente 3 cm)</span><input class="cfg" id="openingAdvanceMs" type="number" min="30" max="800" step="10"></div>
-        <div class="hint">100 ms es solo un valor inicial. Hay que medir el avance real en la pista.</div>
+        <div class="field"><span>Avance hacia apertura (ms; objetivo ~15 cm)</span><input class="cfg" id="openingAdvanceMs" type="number" min="30" max="2500" step="10"></div>
+        <div class="hint">500 ms es un punto de partida, NO equivale necesariamente a 15 cm. Calibrar con el robot y piso reales.</div>
       </div>
 
       <div class="card">
         <h2>Giros temporizados (sin encoders)</h2>
-        <div class="field"><span>PWM avance Maze</span><input class="cfg" id="basePwm" type="number" min="120" max="255" step="1"></div>
+        <div class="field"><span>PWM avance Maze</span><input class="cfg" id="basePwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="120" max="255" step="1"></div>
         <div class="field"><span>Giro 90° derecha (ms)</span><input class="cfg" id="turn90RightMs" type="number" min="50" max="1200" step="10"></div>
         <div class="field"><span>Giro 90° izquierda (ms)</span><input class="cfg" id="turn90LeftMs" type="number" min="50" max="1200" step="10"></div>
@@ -674,7 +674,7 @@ button:active{transform:translateY(0) scale(.99)}
 
       <div class="card">
         <h2>Compensacion de motores</h2>
-        <div class="hint">Para que no se desvie en el avance corto, regula cada motor por separado. Estos PWM se usan tambien en los tramos sin pared lateral.</div>
+        <div class="hint">Si se desvía durante el avance de la apertura, ajustá cada PWM por separado. También se aplican a los tramos sin pared lateral.</div>
         <div class="field"><span>PWM motor izquierdo</span><input class="cfg" id="openingLeftPwm" type="number" min="155" max="255" step="1"></div>
         <div class="field"><span>PWM motor derecho</span><input class="cfg" id="openingRightPwm" type="number" min="155" max="255" step="1"></div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
@@ -682,12 +682,12 @@ button:active{transform:translateY(0) scale(.99)}
 
       <div class="card">
         <h2>Calibrar SIN encoders</h2>
-        <div class="hint">Con el robot en un espacio despejado y apoyado en el piso: aplica los parametros de arriba y prueba cada maniobra por separado. El avance corto y ambos giros se detienen automaticamente al terminar su tiempo.</div>
+        <div class="hint">Con el robot en un espacio despejado y apoyado en el piso: aplica los parametros de arriba y prueba cada maniobra por separado. El avance hacia la apertura y ambos giros se detienen automaticamente al terminar su tiempo.</div>
         <button class="full start" onclick="testTimedMove('FWD')">PROBAR AVANCE CORTO</button>
         <button class="full" onclick="testTimedMove('L90')">PROBAR GIRO 90° IZQUIERDA</button>
         <button class="full" onclick="testTimedMove('R90')">PROBAR GIRO 90° DERECHA</button>
         <button class="full stop" onclick="stopAll()">STOP</button>
-        <div class="hint">Prueba activa: <b id="timedTestState">NINGUNA</b>. Repeti ajustando ms y PWM hasta medir cerca de 3 cm y 90° fisicos.</div>
+        <div class="hint">Prueba activa: <b id="timedTestState">NINGUNA</b>. Repetí ajustando ms y PWM hasta medir cerca de 15 cm de avance y 90° reales.</div>
       </div>
 
       <div class="card">
@@ -812,8 +812,8 @@ function selectMazeHand(mode){
   document.getElementById('mazeHandRight').classList.toggle('active',mode==='MAZE');
   document.getElementById('mazeHandLeft').classList.toggle('active',mode==='MAZE_LEFT');
   document.getElementById('mazeHandDescription').textContent=mode==='MAZE'
-    ? 'Pared derecha: apertura derecha; frente bloqueado: giro a izquierda por tiempo. Apertura: 500 ms, avance corto temporizado y 300 ms.'
-    : 'Pared izquierda: apertura izquierda; frente bloqueado: giro a derecha por tiempo. Apertura: 500 ms, avance corto temporizado y 300 ms.';
+    ? 'Pared derecha: apertura ADC inferior a 1750 y prioridad derecha. Freno frontal ADC 1650; sin salida derecha gira izquierda. Apertura: 500 ms, avance objetivo 15 cm por tiempo, 300 ms y giro derecha.'
+    : 'Pared izquierda (solo para pruebas): apertura izquierda; frente bloqueado gira derecha. Avance a apertura con tiempo calibrable, no usa encoders.';
 }
 function selectWallHand(mode){
   if(robotRunning)return;
