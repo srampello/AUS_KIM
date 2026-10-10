@@ -66,7 +66,9 @@ const uint32_t PWM_FREQ = 20000;
 const uint8_t PWM_BITS = 8;
 
 const uint32_t CONTROL_INTERVAL_MS = 10; // 100 Hz
-const uint32_t WEB_FAILSAFE_MS = 1500;
+const uint32_t WEB_FAILSAFE_MS = 1500; // Pruebas y control manual.
+const uint32_t AUTONOMOUS_RACE_MAX_MS = 120000UL; // Tope local: 2 minutos.
+const uint32_t LOCAL_STOP_DEBOUNCE_MS = 35UL;
 
 const uint8_t SENSOR_SAMPLES = 5;
 const uint16_t SENSOR_SAMPLE_DELAY_US = 100;
@@ -95,6 +97,10 @@ const uint8_t PIN_ENC_L_A = 9;
 const uint8_t PIN_ENC_L_B = 10;
 const uint8_t PIN_ENC_R_A = 11;
 const uint8_t PIN_ENC_R_B = 12;
+
+// GPIO0 suele ser el boton BOOT en ESP32-S3 SuperMini. STOP local de carrera.
+// Verificar acceso al boton en la placa montada antes de competir.
+const uint8_t PIN_LOCAL_STOP = 0;
 
 // LEDC channels (Arduino-ESP32 2.x)
 const uint8_t CH_L_IN1 = 0;
@@ -251,6 +257,10 @@ uint32_t stateStartMs = 0;
 uint32_t lastDecisionMs = 0;
 uint32_t lastControlMs = 0;
 uint32_t lastHeartbeatMs = 0;
+bool autonomousRace = false;
+uint32_t autonomousRaceStartMs = 0;
+bool localStopPressPending = false;
+uint32_t localStopPressStartMs = 0;
 
 SensorData sFL, sFR, sLL, sLR;
 
@@ -1067,6 +1077,8 @@ void handleStatus() {
 
   json += "{";
   json += "\"running\":" + String(running ? "true" : "false") + ",";
+  json += "\"autonomousRace\":" + String(autonomousRace ? "true" : "false") + ",";
+  json += "\"raceElapsedMs\":" + String(autonomousRace && running ? millis() - autonomousRaceStartMs : 0UL) + ",";
   json += "\"timedTestAction\":\"" + String(timedTestName(timedTestAction)) + "\",";
   json += "\"mode\":\"" + String(modeName(activeMode)) + "\",";
   json += "\"state\":\"" + String(stateName(robotState)) + "\",";
@@ -1180,6 +1192,8 @@ void handleMode() {
   String mode = server.arg("mode");
 
   // Siempre se detiene al cambiar de modo.
+  autonomousRace = false;
+  localStopPressPending = false;
   timedTestAction = TIMED_NONE;
   running = false;
   robotState = STATE_STOPPED;
@@ -1234,8 +1248,22 @@ void handleRun() {
   }
 
   bool state = server.arg("state") == "1";
+  bool autonomyRequested = server.hasArg("autonomous") && server.arg("autonomous") == "1";
+
+  // Solo modo laberinto por derecha habilita carrera independiente de Wi-Fi.
+  if (state && autonomyRequested && activeMode != MODE_MAZE) {
+    server.send(400, "text/plain", "Carrera autonoma solo disponible en MAZE (pared derecha)");
+    return;
+  }
+  if (state && autonomyRequested && digitalRead(PIN_LOCAL_STOP) == LOW) {
+    server.send(409, "text/plain", "Soltar BOOT/GPIO0 antes de largar");
+    return;
+  }
 
   if (state) {
+    autonomousRace = autonomyRequested;
+    autonomousRaceStartMs = autonomyRequested ? millis() : 0UL;
+    localStopPressPending = false;
     stopReason = "NINGUNA";
     resetPid();
     lastHeartbeatMs = millis();
@@ -1256,6 +1284,8 @@ void handleRun() {
       robotState = STATE_FOLLOW;
     }
   } else {
+    autonomousRace = false;
+    localStopPressPending = false;
     stopReason = "PARADA_MANUAL_API_RUN";
     running = false;
     robotState = STATE_STOPPED;
@@ -1527,6 +1557,8 @@ void handlePing() {
 }
 
 void handleStop() {
+  autonomousRace = false;
+  localStopPressPending = false;
   timedTestAction = TIMED_NONE;
   stopReason = "PARADA_MANUAL_O_PAGINA_CERRADA";
   Serial.println("AUS_KIM STOP: " + stopReason);
@@ -1572,6 +1604,9 @@ void setup() {
   setupPwmPin(PIN_MOTOR_R_IN2, CH_R_IN2);
 
   stopMotors();
+
+  // STOP local, activo LOW, compatible con boton BOOT/GPIO0.
+  pinMode(PIN_LOCAL_STOP, INPUT_PULLUP);
 
   pinMode(PIN_ENC_L_A, INPUT);
   pinMode(PIN_ENC_L_B, INPUT);
@@ -1626,6 +1661,23 @@ void setup() {
 }
 
 // ============================================================
+// STOP LOCAL PARA CARRERA SIN WIFI
+// ============================================================
+
+void stopRaceLocally(const char* reason) {
+  stopReason = reason;
+  Serial.println("AUS_KIM STOP LOCAL: " + stopReason);
+  autonomousRace = false;
+  localStopPressPending = false;
+  timedTestAction = TIMED_NONE;
+  running = false;
+  robotState = STATE_STOPPED;
+  pendingTurnState = STATE_STOPPED;
+  stopMotors();
+  resetPid();
+}
+
+// ============================================================
 // 14. LOOP
 // ============================================================
 
@@ -1639,11 +1691,36 @@ void loop() {
     updateControl();
   }
 
+  // Carrera: control local del ESP32, sin depender de heartbeat Wi-Fi.
+  // El STOP remoto sigue disponible despues de reconectar el telefono.
+  if (autonomousRace && running) {
+    if (digitalRead(PIN_LOCAL_STOP) == LOW) {
+      if (!localStopPressPending) {
+        localStopPressPending = true;
+        localStopPressStartMs = now;
+      } else if (now - localStopPressStartMs >= LOCAL_STOP_DEBOUNCE_MS) {
+        stopRaceLocally("STOP_FISICO_GPIO0");
+      }
+    } else {
+      localStopPressPending = false;
+    }
+
+    if (autonomousRace && running &&
+        now - autonomousRaceStartMs >= AUTONOMOUS_RACE_MAX_MS) {
+      stopRaceLocally("TIEMPO_MAXIMO_CARRERA_120S");
+    }
+  } else {
+    localStopPressPending = false;
+  }
+
   bool motorsRunning = (motorLeftCmd != 0) || (motorRightCmd != 0);
 
-  if (motorsRunning && (now - lastHeartbeatMs > WEB_FAILSAFE_MS)) {
+  // El corte por comunicacion se conserva en pruebas y control manual.
+  if (motorsRunning && !autonomousRace &&
+      (now - lastHeartbeatMs > WEB_FAILSAFE_MS)) {
     stopReason = "FAILSAFE_WIFI_MS=" + String(now - lastHeartbeatMs);
     Serial.println("AUS_KIM STOP: " + stopReason);
+    autonomousRace = false;
     running = false;
     robotState = STATE_STOPPED;
     pendingTurnState = STATE_STOPPED;
