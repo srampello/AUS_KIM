@@ -1002,7 +1002,7 @@ void updateControl() {
     return;
   }
 
-  if (activeMode == MODE_MAZE || activeMode == MODE_MAZE_LEFT) {
+  if (activeMode == MODE_MAZE) {
     runMaze();
     return;
   }
@@ -1225,7 +1225,8 @@ void handleMode() {
   } else if (mode == "MAZE") {
     activeMode = MODE_MAZE;
   } else if (mode == "MAZE_LEFT") {
-    activeMode = MODE_MAZE_LEFT;
+    server.send(400, "text/plain", "Maze izquierda deshabilitado: solo seguir pared derecha");
+    return;
   } else if (mode == "WALL_LEFT") {
     activeMode = MODE_WALL_LEFT;
   } else if (mode == "ENCODER") {
@@ -1235,7 +1236,7 @@ void handleMode() {
     encoderTestRequestedCm = 0.0f;
     captureMoveStart();
   } else {
-    server.send(400, "text/plain", "mode debe ser TEST, WALL, WALL_LEFT, MAZE, MAZE_LEFT o ENCODER");
+    server.send(400, "text/plain", "mode debe ser TEST, WALL, WALL_LEFT, MAZE o ENCODER");
     return;
   }
 
@@ -1249,7 +1250,7 @@ void handleRun() {
     return;
   }
 
-  if (activeMode == MODE_TEST || activeMode == MODE_ENCODER) {
+  if (activeMode == MODE_TEST || activeMode == MODE_ENCODER || activeMode == MODE_MAZE_LEFT) {
     server.send(400, "text/plain", "Este modo no usa /api/run");
     return;
   }
@@ -1277,7 +1278,7 @@ void handleRun() {
     lastDecisionMs = millis();
     running = true;
 
-    if (activeMode == MODE_MAZE || activeMode == MODE_MAZE_LEFT) {
+    if (activeMode == MODE_MAZE) {
       frontWallStableCount = 0;
       rightOpenStableCount = 0;
       rightWallStableCount = 0;
