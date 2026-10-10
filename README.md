@@ -456,3 +456,30 @@ En Test Suite > Resolver laberinto hay botones para probar **curva abierta derec
 **Seguridad:** frenado frontal, STOP remoto, STOP fisico GPIO0 y limite de carrera autonoma de 120 segundos conservados. Si se pierde Wi-Fi, el modo Race continua, por lo que la parada local debe estar comprobada antes de competir.
 
 La variante por pared izquierda sigue disponible en el Test Suite para experimentacion y utiliza las maniobras espejadas. Esta es una simplificacion heuristica del seguimiento de pared; no se garantiza resolver cualquier laberinto ni girar exactamente 90 grados sin calibracion real.
+
+
+## Estrategia activa: perdida confirmada de pared derecha (10/10/2026)
+
+Esta seccion **reemplaza las estrategias anteriores de apertura ADC1750, avance de 15 cm y giros abiertos predeterminados** descritas mas arriba. Es la configuracion vigente de Race:
+
+1. Seguir exclusivamente pared derecha con PID, PWM base **165** y objetivo lateral derecho **2300 ADC**.
+2. **No girar por apertura a 1750**. El Sharp derecho solo declara perdida si su lectura filtrada permanece estrictamente **por debajo de 1300 durante 100 ms continuos**. Si vuelve a **1300 o mas** antes de ese tiempo, el conteo se cancela y vuelve a cero.
+3. Durante estos primeros 100 ms sin pared, seguir **recto** con PWM independiente 165/165; el PID queda temporalmente suspendido para evitar una correccion violenta al detectar espacio libre.
+4. Tras confirmar la perdida, avanzar recto otros **150 ms** para despejar el vertice de la esquina. Si vuelve a ver pared con ADC >=1500 durante tres muestras de control consecutivas, retomar el PID inmediatamente.
+5. Si no recupera pared, buscarla hacia la derecha con una **curva amplia**, manteniendo las dos ruedas hacia adelante: PWM exterior/izquierdo 195 e interior/derecho 155. Al volver a confirmar pared (ADC >=1500), retomar PID derecho.
+6. Frente bloqueado (ambos Sharp frontales ADC >=1650, confirmados) tiene prioridad incluso mientras busca o despeja la esquina: detenerse, esperar 300 ms y **girar a izquierda sobre su eje durante 174 ms**; luego reanudar seguimiento de pared derecha.
+
+No se usan encoders en el modo autonomo y no se realizan giros a derecha sobre el eje para buscar pared. Se conserva la calibracion de 166 ms derecha para pruebas de diagnostico, pero no se usa en Maze. La opcion Maze por izquierda quedo deshabilitada; el PID lateral izquierdo sigue disponible solo como prueba.
+
+| Parametro de `/api/config` | Predeterminado |
+| --- | ---: |
+| `rightLostAdc` | 1300 |
+| `rightLostConfirmMs` | 100 ms |
+| `rightRecoverAdc` | 1500 |
+| `rightClearanceMs` | 150 ms |
+| `searchRightOuterPwm` | 195 |
+| `searchRightInnerPwm` | 155 |
+| `turn90LeftMs` | 174 ms |
+
+El Test Suite permite regular estos valores y muestra `rightLossElapsedMs` para facilitar la observacion. Las modificaciones del navegador permanecen en RAM hasta actualizar los valores por defecto en el firmware y volver a grabarlo. Como no contamos con medicion absoluta de posicion, **los 150 ms y el radio de busqueda requieren pruebas fisicas en un tramo con esquina**. El tiempo de carrera de 120 s, STOP local BOOT/GPIO0 y STOP web al estar conectado siguen activos.
+
