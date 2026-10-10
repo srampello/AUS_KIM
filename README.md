@@ -348,3 +348,33 @@ Los valores de izquierda comienzan iguales a los de derecha solo como punto de p
 
 **Importante:** los cambios realizados desde la pagina web no se graban en memoria persistente; para fijar una calibracion de competencia, modificar los valores predeterminados del Test Suite en GitHub y volver a cargar el firmware. La sincronizacion por GitHub Actions regenera `AUS_KIM_RACE.ino` automaticamente.
 
+
+
+### Interfaces web separadas del firmware
+
+Desde esta refactorizacion **no hay HTML incrustado en los archivos .ino**. Se usan encabezados locales con cadenas HTML en `PROGMEM`, para conservar el servidor Wi-Fi sin LittleFS ni carga adicional de archivos.
+
+```text
+firmware/
+├── 05_test_suite/AUS_KIM_TEST_SUITE/
+│   ├── AUS_KIM_TEST_SUITE.ino   # Motores, sensores, encoders, PID, Maze y API
+│   ├── web_test_suite.h         # HTML/CSS/JS de pruebas y calibracion
+│   ├── web_race.h               # HTML/CSS/JS de largada RMP
+│   └── rmp_logo.h               # Logo RMP en memoria flash
+└── 06_race/AUS_KIM_RACE/
+    ├── AUS_KIM_RACE.ino         # Generado automaticamente desde Test Suite
+    ├── web_test_suite.h         # Copia generada
+    ├── web_race.h               # Copia generada
+    └── rmp_logo.h               # Copia generada
+```
+
+**Fuente de verdad:** editar el `.ino` y los archivos `.h` del directorio `05_test_suite`. Nunca modificar manualmente los archivos de `06_race`.
+
+El script `python tools/generar_aus_kim_race.py` genera el `.ino` Race y sincroniza los tres `.h`. GitHub Actions realiza ese proceso al modificar cualquiera de estos archivos fuente. Ambos sketches deben compilarse con los tres encabezados en la misma carpeta que su correspondiente `.ino`.
+
+Rutas web:
+- Test Suite: `http://192.168.4.1/`
+- Vista de carrera desde Test Suite: `http://192.168.4.1/race`
+- En el firmware Race, la vista de carrera aparece en la ruta `/`.
+
+El cambio solo reorganiza los archivos de interfaz y no modifica los parametros de navegacion ni la logica del robot.
