@@ -2054,6 +2054,10 @@ main{width:min(100%,480px);display:flex;flex-direction:column;align-items:center
 .overline{font-weight:800;letter-spacing:.32em;font-size:11px;color:#a594c9;text-transform:uppercase}
 h1{font-size:clamp(24px,6vw,33px);font-weight:900;letter-spacing:.04em;margin:12px 0 0}
 .subtitle{font-size:12px;color:var(--muted);letter-spacing:.24em;margin:8px 0 30px;text-transform:uppercase}
+.sideTabs{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%;margin:0 0 30px;padding:6px;border:1px solid #44325e;border-radius:17px;background:#130f20}
+.sideTabs button{border:1px solid transparent;background:#1b142b;color:#bcb2d0;border-radius:12px;padding:16px 8px;font-weight:900;font-size:12px;letter-spacing:.05em;cursor:pointer}
+.sideTabs button.active{color:#fff;border-color:#a78bfa;background:linear-gradient(135deg,#8b5cf6,#6d28d9);box-shadow:0 7px 25px #6329c044}
+.sideTabs button:disabled{opacity:.8;cursor:default}
 .ring{position:relative;width:min(69vw,306px);height:min(69vw,306px);max-width:306px;max-height:306px;display:grid;place-items:center}
 .ring:before{content:'';position:absolute;inset:-13px;border-radius:50%;border:1px solid rgba(167,139,250,.26);box-shadow:0 0 65px #5b21b650}
 .launch{position:relative;border:1px solid #b095ff;cursor:pointer;background:radial-gradient(circle at 50% 30%,#462384 0%,#251448 64%,#130e22 100%);border-radius:50%;height:100%;width:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;box-shadow:inset 0 1px 27px #b99aff36,0 0 38px #8b5cf640,0 21px 45px #0008;color:var(--white);-webkit-tap-highlight-color:transparent;touch-action:manipulation;transition:transform .16s,box-shadow .16s}
@@ -2077,6 +2081,10 @@ footer{margin-top:34px;font-size:10px;font-weight:700;letter-spacing:.18em;color
   <div class="overline">RMP ROBOTICS</div>
   <h1>AUS_KIM</h1>
   <div class="subtitle">Race control · Micromouse</div>
+  <div class="sideTabs" role="tablist" aria-label="Seleccion del sentido de laberinto">
+    <button type="button" id="raceRight" class="active" onclick="chooseRaceHand('MAZE')">PARED DERECHA</button>
+    <button type="button" id="raceLeft" onclick="chooseRaceHand('MAZE_LEFT')">PARED IZQUIERDA</button>
+  </div>
   <div class="ring">
     <button id="launch" class="launch" type="button" onclick="startRace()" aria-label="Largar AUS KIM">
       <span id="fallback" class="logoFallback">RMP</span>
@@ -2095,7 +2103,21 @@ let busy=false;
 let connected=false;
 let racing=false;
 let seenStop=false;
+let selectedRaceMode='MAZE';
 const el=id=>document.getElementById(id);
+function paintRaceHand(){
+  el('raceRight').classList.toggle('active',selectedRaceMode==='MAZE');
+  el('raceLeft').classList.toggle('active',selectedRaceMode==='MAZE_LEFT');
+  el('raceRight').disabled=busy||racing;
+  el('raceLeft').disabled=busy||racing;
+}
+function chooseRaceHand(mode){
+  if(busy||racing)return;
+  selectedRaceMode=mode;
+  seenStop=false;
+  el('message').textContent='';
+  paintRaceHand();
+}
 const req=async path=>{
   const r=await fetch(path,{cache:'no-store'});
   if(!r.ok)throw new Error('HTTP '+r.status);
@@ -2105,7 +2127,7 @@ async function startRace(){
   if(busy||racing)return;
   busy=true;el('launch').disabled=true;el('message').textContent='';
   try{
-    await req('/api/mode?mode=MAZE');
+    await req('/api/mode?mode='+selectedRaceMode);
     await req('/api/run?state=1');
     seenStop=false;
     await refresh();
@@ -2123,7 +2145,9 @@ async function refresh(){
   try{
     const data=await (await req('/api/status')).json();
     connected=true;
-    racing=data.mode==='MAZE'&&data.running===true;
+    racing=(data.mode==='MAZE'||data.mode==='MAZE_LEFT')&&data.running===true;
+    if(racing)selectedRaceMode=data.mode;
+    paintRaceHand();
     el('status').textContent=racing?'EN CARRERA':(seenStop||data.stopReason&&data.stopReason!=='NINGUNA'?'DETENIDO':'LISTO PARA LARGAR');
     el('detail').textContent=racing?data.state:(data.stopReason&&data.stopReason!=='NINGUNA'?data.stopReason:'Toca el logo para iniciar el laberinto');
     el('dot').classList.toggle('live',racing);
@@ -2134,6 +2158,7 @@ async function refresh(){
     el('detail').textContent='Revisa la red Wi-Fi AUS_KIM_TEST';
     el('dot').classList.remove('live');
   }
+  paintRaceHand();
   el('launch').disabled=busy||!connected||racing;
   el('stop').disabled=busy||!connected;
 }
