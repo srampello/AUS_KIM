@@ -751,7 +751,7 @@ const char* stateName(RobotState s) {
   switch (s) {
     case STATE_FOLLOW: return (activeMode == MODE_WALL_LEFT || activeMode == MODE_MAZE_LEFT) ? "PID PARED IZQUIERDA" : "PID PARED DERECHA";
     case STATE_SIDE_OPEN_WAIT: return activeMode == MODE_MAZE_LEFT ? "IZQUIERDA / FRENO 500 MS" : "DERECHA / FRENO 500 MS";
-    case STATE_SIDE_OPEN_ADVANCE: return activeMode == MODE_MAZE_LEFT ? "IZQUIERDA / AVANCE 3 CM" : "DERECHA / AVANCE 3 CM";
+    case STATE_SIDE_OPEN_ADVANCE: return activeMode == MODE_MAZE_LEFT ? "IZQUIERDA / AVANCE POR TIEMPO" : "DERECHA / AVANCE POR TIEMPO";
     case STATE_SIDE_OPEN_WAIT_TURN: return activeMode == MODE_MAZE_LEFT ? "IZQUIERDA / ESPERA GIRO" : "DERECHA / ESPERA GIRO";
     case STATE_FRONT_WAIT:           return "PARED FRONTAL / FRENO";
     case STATE_TURN_LEFT:            return "GIRO 90 IZQUIERDA";
