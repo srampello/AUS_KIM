@@ -770,7 +770,7 @@ void runMaze() {
       enterState(STATE_FOLLOW);
       break;
 
-    case STATE_FOLLOW:
+    case STATE_FOLLOW: {
       // La pared frontal siempre tiene prioridad.
       if (frontBlocked) {
         stopMotors();
@@ -779,8 +779,7 @@ void runMaze() {
         break;
       }
 
-      // Si vuelve a ver pared derecha de manera estable,
-      // habilita la proxima apertura.
+      // Habilitar apertura solo despues de detectar pared en ese lado.
       if (leftHand) {
         if (leftWallStableCount >= EVENT_CONFIRM_SAMPLES) leftOpeningArmed = true;
       } else {
@@ -804,6 +803,7 @@ void runMaze() {
         setDrive(cfg.basePwm, cfg.basePwm);
       }
       break;
+    }
 
     case STATE_SIDE_OPEN_WAIT:
       stopMotors();
@@ -819,7 +819,7 @@ void runMaze() {
       break;
 
     case STATE_SIDE_OPEN_ADVANCE: {
-      // Solo 5 cm rectos medidos por promedio de ambos encoders.
+      // Avance de 3 cm medido con encoders y correccion individual de motores.
       // Si aparece pared frontal, detener primero.
       if (frontBlocked) {
         stopMotors();
@@ -838,7 +838,7 @@ void runMaze() {
 
       if (now - stateStartMs >= OPENING_ADVANCE_TIMEOUT_MS) {
         // No seguir a ciegas si un encoder esta fallando.
-        stopReason = "TIMEOUT_AVANCE_5CM_t=" + String(getMoveTicksAverage()) + "_obj="
+        stopReason = "TIMEOUT_AVANCE_3CM_t=" + String(getMoveTicksAverage()) + "_obj="
                    + String((uint32_t)roundf(cfg.openingAdvanceCm * TICKS_PER_CM));
         Serial.println("AUS_KIM STOP: " + stopReason);
         stopMotors();
@@ -861,8 +861,7 @@ void runMaze() {
 
     case STATE_FRONT_WAIT:
       stopMotors();
-      // Mientras el frente siga bloqueado, reevaluar y girar a izquierda.
-      // No detener el Maze Solver por la cantidad de giros.
+      // Cuando el frente esta bloqueado, girar al lado opuesto del seguimiento.
       if (now - stateStartMs >= (uint32_t)cfg.decisionWaitMs) {
         if (frontLeftTurns < 2) frontLeftTurns++;
         captureMoveStart();
