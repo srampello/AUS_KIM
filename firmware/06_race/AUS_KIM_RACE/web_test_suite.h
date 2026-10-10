@@ -681,6 +681,16 @@ button:active{transform:translateY(0) scale(.99)}
       </div>
 
       <div class="card">
+        <h2>Calibrar SIN encoders</h2>
+        <div class="hint">Con el robot en un espacio despejado y apoyado en el piso: aplica los parametros de arriba y prueba cada maniobra por separado. El avance corto y ambos giros se detienen automaticamente al terminar su tiempo.</div>
+        <button class="full start" onclick="testTimedMove('FWD')">PROBAR AVANCE CORTO</button>
+        <button class="full" onclick="testTimedMove('L90')">PROBAR GIRO 90° IZQUIERDA</button>
+        <button class="full" onclick="testTimedMove('R90')">PROBAR GIRO 90° DERECHA</button>
+        <button class="full stop" onclick="stopAll()">STOP</button>
+        <div class="hint">Prueba activa: <b id="timedTestState">NINGUNA</b>. Repeti ajustando ms y PWM hasta medir cerca de 3 cm y 90° fisicos.</div>
+      </div>
+
+      <div class="card">
         <h2>Telemetria Maze</h2>
         <div class="sensor-grid">
           <div class="metric"><div class="label">Frontal izquierdo</div><div class="value" id="mFL">0</div></div>
@@ -830,6 +840,18 @@ async function startAutonomous(mode){
   await fetch('/api/mode?mode='+mode,{cache:'no-store'});
   await fetch('/api/run?state=1',{cache:'no-store'});
   await updateStatus();
+}
+
+async function testTimedMove(action){
+  if(robotRunning){alert('Detene el robot antes de iniciar una prueba');return;}
+  try{
+    await applyConfig();
+    const mode=await fetch('/api/mode?mode=TEST',{cache:'no-store'});
+    if(!mode.ok)throw new Error(await mode.text());
+    const r=await fetch('/api/timed_test?action='+encodeURIComponent(action),{cache:'no-store'});
+    if(!r.ok)throw new Error(await r.text());
+    await updateStatus();
+  }catch(e){alert('No se pudo iniciar la prueba: '+e.message);}
 }
 
 async function stopAll(){
@@ -986,6 +1008,7 @@ async function updateStatus(){
     document.getElementById('wLR2').textContent=selectedWallMode==='WALL_LEFT' ? d.sensor.ll : d.sensor.lr;
 
     // MAZE
+    document.getElementById('timedTestState').textContent=d.timedTestAction||'NINGUNA';
     document.getElementById('mazeState').textContent=(d.mode==='MAZE'||d.mode==='MAZE_LEFT') ? d.state : 'DETENIDO';
     document.getElementById('mazeStopReason').textContent=d.stopReason||'NINGUNA';
     document.getElementById('mFrontFlag').textContent=d.flags.frontBlocked?'PARED':'LIBRE';
