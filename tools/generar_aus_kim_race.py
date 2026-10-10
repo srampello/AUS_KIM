@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "firmware/05_test_suite/AUS_KIM_TEST_SUITE/AUS_KIM_TEST_SUITE.ino"
 TARGET = ROOT / "firmware/06_race/AUS_KIM_RACE/AUS_KIM_RACE.ino"
+SOURCE_LOGO = SOURCE.parent / "rmp_logo.h"
+TARGET_LOGO = TARGET.parent / "rmp_logo.h"
 
 ORIGINAL_ROOT = '''void handleRoot() {
   server.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
@@ -37,6 +39,15 @@ def main():
         "// La logica de manejo es IDENTICA al Test Suite. Solo cambia la portada.\n\n"
     )
     TARGET.parent.mkdir(parents=True, exist_ok=True)
+    # Se copia el mismo logo al sketch de carrera, sin rutas relativas.
+    if SOURCE_LOGO.exists():
+        logo_bytes = SOURCE_LOGO.read_bytes()
+        if not TARGET_LOGO.exists() or TARGET_LOGO.read_bytes() != logo_bytes:
+            TARGET_LOGO.write_bytes(logo_bytes)
+            print("Sincronizado logo:", TARGET_LOGO.relative_to(ROOT))
+    elif '#include "rmp_logo.h"' in test_suite:
+        raise SystemExit("Falta el header rmp_logo.h en Test Suite")
+
     generated = header + race
     if TARGET.exists() and TARGET.read_text(encoding="utf-8") == generated:
         print("AUS_KIM_RACE.ino ya estaba sincronizado.")
