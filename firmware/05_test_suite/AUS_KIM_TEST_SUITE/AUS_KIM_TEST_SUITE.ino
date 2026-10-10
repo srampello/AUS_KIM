@@ -160,16 +160,16 @@ struct ControlConfig {
   int targetRightAdc = 2300;
   float leftKp = 0.065f, leftKi = 0.0f, leftKd = 1.00f;
   int targetLeftAdc = 2300;
-  int basePwm = 180;
+  int basePwm = 165;
   int maxCorrection = 60;
 
   // STOP frontal.
   // Sharp: pared cercana = ADC mayor.
-  int frontWallAdc = 1900;
-  int frontConfirmAdc = 1900;
+  int frontWallAdc = 1650;
+  int frontConfirmAdc = 1650;
 
-  // Apertura lateral confirmada cuando el sensor baja de 1600.
-  int rightOpenAdc = 1600;
+  // Apertura derecha confirmada cuando lateral derecho baja de 1750.
+  int rightOpenAdc = 1750;
   int leftOpenAdc = 1600;
 
   // Seguimiento/giro.
@@ -183,13 +183,14 @@ struct ControlConfig {
   int turn90LeftTicks = 125;
   int turn180Ticks = 250;
 
-  // Apertura: frenar 500 ms -> avanzar por tiempo (~3 cm iniciales)
-  // -> frenar 300 ms -> girar por tiempo -> frenar 300 ms.
+  // Apertura derecha: parar 500 ms, avanzar ~15 cm (por tiempo)
+  // y frenar 300 ms antes de girar hacia la derecha.
+  // 500 ms es un punto inicial NO calibrado. Ajustar segun pista/motores.
   int openingWaitMs = 500;
-  float openingAdvanceCm = 3.0f;  // referencia historica, NO mide recorrido
-  int openingAdvanceMs = 100;     // calibrar tiempo en pista
-  int openingLeftPwm = 180;       // ajuste independiente para motores distintos
-  int openingRightPwm = 180;
+  float openingAdvanceCm = 15.0f; // objetivo de referencia; NO mide cm
+  int openingAdvanceMs = 500;     // provisional; calibrar distancia REAL de 15 cm
+  int openingLeftPwm = 165;       // ajuste independiente para motores distintos
+  int openingRightPwm = 165;
   int turn90LeftMs = 160;        // punto de partida a calibrar
   int turn90RightMs = 160;
   // Avance recto independiente del PID de pared derecha.
@@ -225,7 +226,7 @@ const int MIN_MOVING_PWM = 155;
 const uint16_t BRAKE_SETTLE_MS = 100;
 
 // Avance normal por PID.
-const int MAZE_FORWARD_MIN_PWM = 120;
+const int MAZE_FORWARD_MIN_PWM = 155;
 const int MAZE_FORWARD_MAX_PWM = 255;
 
 // Maze: los tiempos de maniobra estan acotados desde ControlConfig.
@@ -785,14 +786,10 @@ void runMaze() {
       break;
 
     case STATE_FOLLOW: {
-      // La pared frontal siempre tiene prioridad.
-      if (frontBlocked) {
-        stopMotors();
-        frontLeftTurns = 0;
-        enterState(STATE_FRONT_WAIT);
-        break;
-      }
-
+      // Prioridad: apertura del lado elegido > pared frontal.
+      // A la derecha siempre tomar el hueco confirmado antes de girar izquierda.
+      // Si empieza sin haber visto pared, ante una pared frontal se permite
+      // tomar una salida derecha confirmada igualmente.
       // Habilitar apertura solo despues de detectar pared en ese lado.
       if (leftHand) {
         if (leftWallStableCount >= EVENT_CONFIRM_SAMPLES) leftOpeningArmed = true;
@@ -801,11 +798,18 @@ void runMaze() {
       }
       bool armed = leftHand ? leftOpeningArmed : rightOpeningArmed;
       uint8_t stableOpening = leftHand ? leftOpenStableCount : rightOpenStableCount;
-      if (armed && stableOpening >= EVENT_CONFIRM_SAMPLES) {
+      if (stableOpening >= EVENT_CONFIRM_SAMPLES && (armed || frontBlocked)) {
         if (leftHand) leftOpeningArmed = false;
         else rightOpeningArmed = false;
         stopMotors();
         enterState(STATE_SIDE_OPEN_WAIT);
+        break;
+      }
+      // Solo cuando NO hay salida lateral se resuelve la pared frontal.
+      if (frontBlocked) {
+        stopMotors();
+        frontLeftTurns = 0;
+        enterState(STATE_FRONT_WAIT);
         break;
       }
       bool sideOpen = leftHand ? leftOpen : rightOpen;
@@ -822,8 +826,9 @@ void runMaze() {
     case STATE_SIDE_OPEN_WAIT:
       stopMotors();
       if (frontBlocked) {
-        frontLeftTurns = 0;
-        enterState(STATE_FRONT_WAIT);
+        // Ya se eligio la apertura lateral: no girar al lado contrario.
+        // Por proximidad frontal, omitir el avance largo y preparar giro.
+        enterState(STATE_SIDE_OPEN_WAIT_TURN);
         break;
       }
       if (now - stateStartMs >= (uint32_t)cfg.openingWaitMs) {
@@ -833,12 +838,12 @@ void runMaze() {
       break;
 
     case STATE_SIDE_OPEN_ADVANCE:
-      // Avance corto POR TIEMPO, sin depender de los encoders.
-      // El frenado frontal mantiene prioridad durante este avance.
+      // Avance hacia apertura (~15 cm), temporizado SIN encoders.
+      // Si se detecta pared frontal, detener el avance de inmediato;
+      // no seguir hacia la pared y girar hacia la apertura elegida.
       if (frontBlocked) {
         stopMotors();
-        frontLeftTurns = 0;
-        enterState(STATE_FRONT_WAIT);
+        enterState(STATE_SIDE_OPEN_WAIT_TURN);
         break;
       }
       if (now - stateStartMs >= (uint32_t)cfg.openingAdvanceMs) {
@@ -859,10 +864,14 @@ void runMaze() {
 
     case STATE_FRONT_WAIT:
       stopMotors();
-      // Cuando el frente esta bloqueado, girar al lado opuesto del seguimiento.
+      // Volver a evaluar la apertura lateral. Si la derecha esta libre,
+      // tomarla; solo girar izquierda si NO hay salida derecha.
+      if ((leftHand ? leftOpenStableCount : rightOpenStableCount) >= EVENT_CONFIRM_SAMPLES) {
+        enterState(STATE_SIDE_OPEN_WAIT_TURN);
+        break;
+      }
       if (now - stateStartMs >= (uint32_t)cfg.decisionWaitMs) {
         if (frontLeftTurns < 2) frontLeftTurns++;
-
         enterState(leftHand ? STATE_TURN_RIGHT : STATE_TURN_LEFT);
       }
       break;
@@ -896,8 +905,12 @@ void runMaze() {
       // Repetir evaluacion tras la pausa configurada y girar otra vez.
       // La pausa y el limite temporal de cada giro impiden giros sin fin.
       if (frontBlocked) {
-        Serial.println(leftHand ? "AUS_KIM: frente bloqueado; buscando salida a derecha." : "AUS_KIM: frente bloqueado despues del giro; buscando salida a izquierda.");
-        enterState(STATE_FRONT_WAIT);
+        if ((leftHand ? leftOpenStableCount : rightOpenStableCount) >= EVENT_CONFIRM_SAMPLES) {
+          enterState(STATE_SIDE_OPEN_WAIT_TURN);
+        } else {
+          Serial.println(leftHand ? "AUS_KIM: frente bloqueado; buscando salida a derecha." : "AUS_KIM: frente bloqueado sin salida derecha; girar izquierda.");
+          enterState(STATE_FRONT_WAIT);
+        }
         break;
       }
 
@@ -1448,7 +1461,7 @@ void handleConfig() {
   if (server.hasArg("openingAdvanceCm"))
     cfg.openingAdvanceCm = constrain(server.arg("openingAdvanceCm").toFloat(), 1.0f, 30.0f);
   if (server.hasArg("openingAdvanceMs"))
-    cfg.openingAdvanceMs = constrain(server.arg("openingAdvanceMs").toInt(), 30, 800);
+    cfg.openingAdvanceMs = constrain(server.arg("openingAdvanceMs").toInt(), 30, 2500);
   if (server.hasArg("openingLeftPwm"))
     cfg.openingLeftPwm = constrain(server.arg("openingLeftPwm").toInt(), MIN_MOVING_PWM, 255);
   if (server.hasArg("openingRightPwm"))
