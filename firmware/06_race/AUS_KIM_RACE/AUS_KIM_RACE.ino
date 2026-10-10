@@ -251,7 +251,8 @@ uint8_t rightOpenStableCount = 0;
 uint8_t rightWallStableCount = 0;
 bool rightOpeningArmed = false;
 
-// Cantidad de giros a izquierda consecutivos por pared frontal (maximo 2).
+// Cantidad de giros izquierdos recientes (saturado a 2 para diagnostico).
+// Ya NO se usa como limite que detenga la navegacion.
 uint8_t frontLeftTurns = 0;
 
 float errorPid = 0.0f;
@@ -832,7 +833,8 @@ void runMaze() {
 
     case STATE_FRONT_WAIT:
       stopMotors();
-      // Siempre izquierda: una vez si hay salida, dos si es callejon.
+      // Mientras el frente siga bloqueado, reevaluar y girar a izquierda.
+      // No detener el Maze Solver por la cantidad de giros.
       if (now - stateStartMs >= (uint32_t)cfg.decisionWaitMs) {
         if (frontLeftTurns < 2) frontLeftTurns++;
         captureMoveStart();
@@ -888,21 +890,12 @@ void runMaze() {
         break;
       }
 
-      // Si al terminar el primer giro izquierdo sigue viendo frente
-      // cerrado, otro giro a izquierda completa la media vuelta.
-      if (frontBlocked && frontLeftTurns == 1) {
+      // Si sigue detectando pared frontal, no cancelar la carrera.
+      // Repetir evaluacion tras la pausa configurada y girar otra vez.
+      // El tiempo de pausa y los encoders evitan giros encadenados sin control.
+      if (frontBlocked) {
+        Serial.println("AUS_KIM: frente bloqueado despues del giro; buscando salida a izquierda.");
         enterState(STATE_FRONT_WAIT);
-        break;
-      }
-
-      // Tras dos giros izquierdos, el frente deberia estar libre.
-      // Si no lo esta, detener por seguridad y revisar sensores.
-      if (frontBlocked && frontLeftTurns >= 2) {
-        stopReason = "FRENTE_BLOQUEADO_TRAS_2_GIROS_FL=" + String(sFL.filtered)
-                   + "_FR=" + String(sFR.filtered);
-        Serial.println("AUS_KIM STOP: " + stopReason);
-        running = false;
-        robotState = STATE_STOPPED;
         break;
       }
 
