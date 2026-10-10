@@ -6648,6 +6648,7 @@ AAAAAAAAAAAAAAAAcBb/P4jEyZJ66/lvAAAAAElFTkSuQmCC
     <div class="badge">Modo: <b id="globalMode">TEST</b></div>
     <div class="badge">Estado: <b id="globalState">DETENIDO</b></div>
     <div class="badge">IP: <b>192.168.4.1</b></div>
+    <div class="badge"><a href="/race" style="color:#c4b5fd;text-decoration:none;font-weight:900">MODO CARRERA ↗</a></div>
   </div>
 
   <div class="tabs">
