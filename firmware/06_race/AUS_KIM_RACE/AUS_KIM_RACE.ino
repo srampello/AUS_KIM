@@ -163,8 +163,8 @@ struct ControlConfig {
 
   // STOP frontal.
   // Sharp: pared cercana = ADC mayor.
-  int frontWallAdc = 1900;
-  int frontConfirmAdc = 1900;
+  int frontWallAdc = 1750;
+  int frontConfirmAdc = 1750;
 
   // Apertura lateral confirmada cuando el sensor baja de 1600.
   int rightOpenAdc = 1600;
