@@ -6,6 +6,7 @@ on:
       - master
     paths:
       - 'firmware/05_test_suite/AUS_KIM_TEST_SUITE/AUS_KIM_TEST_SUITE.ino'
+      - 'firmware/05_test_suite/AUS_KIM_TEST_SUITE/rmp_logo.h'
       - 'tools/generar_aus_kim_race.py'
   workflow_dispatch:
 
@@ -27,10 +28,10 @@ jobs:
       - name: Guardar cambios de carrera
         shell: bash
         run: |
-          if [[ -n "$(git status --porcelain -- firmware/06_race/AUS_KIM_RACE/AUS_KIM_RACE.ino)" ]]; then
+          if [[ -n "$(git status --porcelain -- firmware/06_race/AUS_KIM_RACE/AUS_KIM_RACE.ino firmware/06_race/AUS_KIM_RACE/rmp_logo.h)" ]]; then
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add firmware/06_race/AUS_KIM_RACE/AUS_KIM_RACE.ino
+            git add firmware/06_race/AUS_KIM_RACE/AUS_KIM_RACE.ino firmware/06_race/AUS_KIM_RACE/rmp_logo.h
             git commit -m "sync: actualizar AUS_KIM_RACE desde Test Suite"
             git push
           else
