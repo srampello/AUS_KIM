@@ -658,7 +658,7 @@ button:active{transform:translateY(0) scale(.99)}
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Espera antes de avanzar (ms)</span><input class="cfg" id="openingWaitMs" type="number" min="0" max="1000" step="10"></div>
         <div class="field"><span>Avance corto (ms, aproximadamente 3 cm)</span><input class="cfg" id="openingAdvanceMs" type="number" min="30" max="800" step="10"></div>
-        <div class="hint">180 ms es solo un valor inicial. Hay que medir el avance real en la pista.</div>
+        <div class="hint">100 ms es solo un valor inicial. Hay que medir el avance real en la pista.</div>
       </div>
 
       <div class="card">
@@ -668,7 +668,7 @@ button:active{transform:translateY(0) scale(.99)}
         <div class="field"><span>Giro 90° derecha (ms)</span><input class="cfg" id="turn90RightMs" type="number" min="50" max="1200" step="10"></div>
         <div class="field"><span>Giro 90° izquierda (ms)</span><input class="cfg" id="turn90LeftMs" type="number" min="50" max="1200" step="10"></div>
         <div class="field"><span>Espera antes de girar ante pared frontal (ms)</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1500" step="10"></div>
-        <div class="hint">240 ms por giro es un valor inicial. Calibrar por separado izquierda y derecha sobre el piso real.</div>
+        <div class="hint">160 ms por giro es un valor inicial. Calibrar por separado izquierda y derecha sobre el piso real.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
