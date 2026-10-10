@@ -646,7 +646,7 @@ button:active{transform:translateY(0) scale(.99)}
         </div>
 
         <div class="hint" id="mazeHandDescription">
-          Pared derecha: sigue PID derecho, prioriza apertura derecha (ADC &lt;1600) y, frente bloqueado, gira a izquierda. Apertura: frena 500 ms, avanza 3 cm y espera 300 ms antes de girar.
+          Pared derecha: sigue PID derecho, prioriza la apertura derecha y, si hay pared frontal, gira a izquierda. Apertura: frena 500 ms, avanza por tiempo (aprox. 3 cm, calibrar) y espera 300 ms. No usa encoders para navegar.
         </div>
       </div>
 
@@ -657,27 +657,26 @@ button:active{transform:translateY(0) scale(.99)}
         <div class="field"><span>Apertura derecha ADC</span><input class="cfg" id="rightOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Apertura izquierda ADC</span><input class="cfg" id="leftOpenAdc" type="number" step="1"></div>
         <div class="field"><span>Espera antes de avanzar (ms)</span><input class="cfg" id="openingWaitMs" type="number" min="0" max="1000" step="10"></div>
-        <div class="field"><span>Avance antes de girar hacia apertura (cm)</span><input class="cfg" id="openingAdvanceCm" type="number" min="1" max="30" step="0.5"></div>
+        <div class="field"><span>Avance corto (ms, aproximadamente 3 cm)</span><input class="cfg" id="openingAdvanceMs" type="number" min="30" max="800" step="10"></div>
+        <div class="hint">180 ms es solo un valor inicial. Hay que medir el avance real en la pista.</div>
       </div>
 
       <div class="card">
-        <h2>Giros por encoders</h2>
+        <h2>Giros temporizados (sin encoders)</h2>
         <div class="field"><span>PWM avance Maze</span><input class="cfg" id="basePwm" type="number" min="120" max="255" step="1"></div>
         <div class="field"><span>PWM giro</span><input class="cfg" id="turnPwm" type="number" min="120" max="255" step="1"></div>
-        <div class="field"><span>Giro 90° derecha (ticks suma)</span><input class="cfg" id="turn90RightTicks" type="number" min="1" max="5000" step="1"></div>
-        <div class="field"><span>Giro 90° izquierda (ticks suma)</span><input class="cfg" id="turn90LeftTicks" type="number" min="1" max="5000" step="1"></div>
-        <div class="field"><span>STOP previo a giro frontal (ms)</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1500" step="10"></div>
-        <div class="hint">Los giros usan la suma absoluta de ambos encoders. Como uno está midiendo mal, los ticks quedan ajustables para calibrarlos físicamente. Si luego identificamos cuál encoder falla, podemos pasar a usar solo el bueno.</div>
+        <div class="field"><span>Giro 90° derecha (ms)</span><input class="cfg" id="turn90RightMs" type="number" min="50" max="1200" step="10"></div>
+        <div class="field"><span>Giro 90° izquierda (ms)</span><input class="cfg" id="turn90LeftMs" type="number" min="50" max="1200" step="10"></div>
+        <div class="field"><span>Espera antes de girar ante pared frontal (ms)</span><input class="cfg" id="decisionWaitMs" type="number" min="0" max="1500" step="10"></div>
+        <div class="hint">240 ms por giro es un valor inicial. Calibrar por separado izquierda y derecha sobre el piso real.</div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
       <div class="card">
-        <h2>Avance recto con encoders</h2>
-        <div class="hint">Sincroniza las ruedas en el avance de 3 cm y en la prueba AVANCE. Si los encoders son distintos, calibra ticks/cm de cada rueda.</div>
-        <div class="field"><span>Ticks/cm izquierdo</span><input class="cfg" id="straightLeftTicksPerCm" type="number" min="1" max="500" step="0.05"></div>
-        <div class="field"><span>Ticks/cm derecho</span><input class="cfg" id="straightRightTicksPerCm" type="number" min="1" max="500" step="0.05"></div>
-        <div class="field"><span>Kp avance recto (PWM/cm)</span><input class="cfg" id="straightKp" type="number" min="0" max="300" step="5"></div>
-        <div class="field"><span>Correccion maxima PWM</span><input class="cfg" id="straightMaxCorrection" type="number" min="0" max="80" step="1"></div>
+        <h2>Compensacion de motores</h2>
+        <div class="hint">Para que no se desvie en el avance corto, regula cada motor por separado. Estos PWM se usan tambien en los tramos sin pared lateral.</div>
+        <div class="field"><span>PWM motor izquierdo</span><input class="cfg" id="openingLeftPwm" type="number" min="155" max="255" step="1"></div>
+        <div class="field"><span>PWM motor derecho</span><input class="cfg" id="openingRightPwm" type="number" min="155" max="255" step="1"></div>
         <button class="full" onclick="applyConfig()">APLICAR PARAMETROS</button>
       </div>
 
@@ -694,8 +693,6 @@ button:active{transform:translateY(0) scale(.99)}
           <div class="metric"><div class="label">Encoder derecho</div><div class="value" id="mEncR">0</div></div>
           <div class="metric"><div class="label">Error PID</div><div class="value" id="mError">0</div></div>
           <div class="metric"><div class="label">Correccion PID</div><div class="value" id="mCorrection">0</div></div>
-          <div class="metric"><div class="label">Error avance recto (cm)</div><div class="value" id="mStraightError">0</div></div>
-          <div class="metric"><div class="label">Correccion avance recto (PWM)</div><div class="value" id="mStraightTrim">0</div></div>
         </div>
       </div>
 
@@ -709,7 +706,7 @@ button:active{transform:translateY(0) scale(.99)}
     <div class="grid">
 
       <div class="card">
-        <h2>Calibracion de encoders</h2>
+        <h2>Diagnostico de encoders (no intervienen en Maze)</h2>
         <div class="status" id="calState">DETENIDO</div>
         <div class="hint">
           Cada prueba toma una referencia nueva de ambos encoders y se detiene automaticamente.
@@ -805,8 +802,8 @@ function selectMazeHand(mode){
   document.getElementById('mazeHandRight').classList.toggle('active',mode==='MAZE');
   document.getElementById('mazeHandLeft').classList.toggle('active',mode==='MAZE_LEFT');
   document.getElementById('mazeHandDescription').textContent=mode==='MAZE'
-    ? 'Pared derecha: prioriza apertura derecha y, frente bloqueado, gira a izquierda. Apertura: 500 ms, 3 cm y espera 300 ms.'
-    : 'Pared izquierda: prioriza apertura izquierda y, frente bloqueado, gira a derecha. Apertura: 500 ms, 3 cm y espera 300 ms.';
+    ? 'Pared derecha: apertura derecha; frente bloqueado: giro a izquierda por tiempo. Apertura: 500 ms, avance corto temporizado y 300 ms.'
+    : 'Pared izquierda: apertura izquierda; frente bloqueado: giro a derecha por tiempo. Apertura: 500 ms, avance corto temporizado y 300 ms.';
 }
 function selectWallHand(mode){
   if(robotRunning)return;
@@ -919,10 +916,8 @@ async function applyConfig(){
   const ids=[
     'kp','ki','kd','targetRightAdc','leftKp','leftKi','leftKd','targetLeftAdc','basePwm','maxCorrection',
     'frontWallAdc','frontConfirmAdc',
-    'rightOpenAdc','leftOpenAdc','openingWaitMs','openingAdvanceCm','turnPwm',
-    'straightLeftTicksPerCm','straightRightTicksPerCm','straightKp','straightMaxCorrection',
-    'turn45RightTicks','turn45LeftTicks',
-    'turn90RightTicks','turn90LeftTicks','turn180Ticks','decisionWaitMs'
+    'rightOpenAdc','leftOpenAdc','openingWaitMs','openingAdvanceMs','openingLeftPwm','openingRightPwm',
+    'turnPwm','turn90RightMs','turn90LeftMs','decisionWaitMs'
   ];
 
   const p=new URLSearchParams();
@@ -1003,8 +998,6 @@ async function updateStatus(){
     document.getElementById('mEncR').textContent=d.enc.right;
     document.getElementById('mError').textContent=d.pid.error.toFixed(1);
     document.getElementById('mCorrection').textContent=d.pid.correction.toFixed(1);
-    document.getElementById('mStraightError').textContent=d.straight.errorCm.toFixed(2);
-    document.getElementById('mStraightTrim').textContent=d.straight.correctionPwm.toFixed(1);
 
     // CALIBRACION ENCODERS
     document.getElementById('calState').textContent=
