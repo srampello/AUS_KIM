@@ -46,6 +46,7 @@ footer{margin-top:34px;font-size:10px;font-weight:700;letter-spacing:.18em;color
   <h1>AUS_KIM</h1>
   <div class="subtitle">Race control · Micromouse</div>
   <div class="raceRule">ESTRATEGIA · SIEMPRE PARED DERECHA</div>
+  <p class="stateDetail" style="margin:-14px 0 26px;max-width:390px">CARRERA AUTONOMA: el robot sigue si se corta el Wi-Fi. STOP local con BOOT/GPIO0. Tiempo maximo: 120 segundos.</p>
   <div class="ring">
     <button id="launch" class="launch" type="button" onclick="startRace()" aria-label="Largar AUS KIM">
       <span id="fallback" class="logoFallback">RMP</span>
@@ -75,7 +76,7 @@ async function startRace(){
   busy=true;el('launch').disabled=true;el('message').textContent='';
   try{
     await req('/api/mode?mode=MAZE');
-    await req('/api/run?state=1');
+    await req('/api/run?state=1&autonomous=1');
     seenStop=false;
     await refresh();
   }catch(e){el('message').textContent='No se pudo largar: '+e.message;}
@@ -94,13 +95,15 @@ async function refresh(){
     connected=true;
     racing=data.mode==='MAZE'&&data.running===true;
     el('status').textContent=racing?'EN CARRERA':(seenStop||data.stopReason&&data.stopReason!=='NINGUNA'?'DETENIDO':'LISTO PARA LARGAR');
-    el('detail').textContent=racing?data.state:(data.stopReason&&data.stopReason!=='NINGUNA'?data.stopReason:'Toca el logo para iniciar el laberinto');
+    el('detail').textContent=racing
+      ? data.state + (data.autonomousRace ? ' · Corre sin Wi-Fi' : ' · Dependiente de Wi-Fi')
+      : (data.stopReason&&data.stopReason!=='NINGUNA'?data.stopReason:'Toca el logo para iniciar el laberinto');
     el('dot').classList.toggle('live',racing);
     el('launch').classList.toggle('running',racing);
     el('launchText').textContent=racing?'CORRIENDO':'LARGAR';
   }catch(_){
     connected=false;racing=false;el('status').textContent='SIN CONEXION';
-    el('detail').textContent='Revisa la red Wi-Fi AUS_KIM_TEST';
+    el('detail').textContent='Sin conexion: la carrera puede seguir en el robot. Usar STOP local BOOT/GPIO0 o cortar alimentacion.';
     el('dot').classList.remove('live');
   }
   el('launch').disabled=busy||!connected||racing;
