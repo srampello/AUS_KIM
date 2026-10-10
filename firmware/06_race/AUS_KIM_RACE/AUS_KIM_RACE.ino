@@ -113,7 +113,9 @@ enum RunMode : uint8_t {
   MODE_TEST = 0,
   MODE_WALL,
   MODE_MAZE,
-  MODE_ENCODER
+  MODE_ENCODER,
+  MODE_WALL_LEFT,
+  MODE_MAZE_LEFT
 };
 
 enum EncoderTestAction : uint8_t {
@@ -129,9 +131,9 @@ enum EncoderTestAction : uint8_t {
 enum RobotState : uint8_t {
   STATE_STOPPED = 0,
   STATE_FOLLOW,
-  STATE_RIGHT_OPEN_WAIT,
-  STATE_RIGHT_OPEN_ADVANCE,
-  STATE_RIGHT_OPEN_WAIT_TURN,
+  STATE_SIDE_OPEN_WAIT,
+  STATE_SIDE_OPEN_ADVANCE,
+  STATE_SIDE_OPEN_WAIT_TURN,
   STATE_FRONT_WAIT,
   STATE_TURN_LEFT,
   STATE_TURN_RIGHT,
@@ -151,6 +153,8 @@ struct ControlConfig {
   float kd = 1.00f;
 
   int targetRightAdc = 2300;
+  float leftKp = 0.065f, leftKi = 0.0f, leftKd = 1.00f;
+  int targetLeftAdc = 2300;
   int basePwm = 180;
   int maxCorrection = 60;
 
@@ -251,6 +255,8 @@ uint8_t frontWallStableCount = 0;
 uint8_t rightOpenStableCount = 0;
 uint8_t rightWallStableCount = 0;
 bool rightOpeningArmed = false;
+uint8_t leftOpenStableCount = 0, leftWallStableCount = 0;
+bool leftOpeningArmed = false;
 
 // Cantidad de giros izquierdos recientes (saturado a 2 para diagnostico).
 // Ya NO se usa como limite que detenga la navegacion.
@@ -619,6 +625,13 @@ void updateAllSensors() {
   } else {
     rightWallStableCount = 0;
   }
+  // Detector independiente: pared izquierda observada -> apertura izquierda.
+  if (leftOpen) {
+    if (leftOpenStableCount < 10) leftOpenStableCount++;
+  } else leftOpenStableCount = 0;
+  if (sLL.filtered >= min(4095, cfg.leftOpenAdc + 200)) {
+    if (leftWallStableCount < 10) leftWallStableCount++;
+  } else leftWallStableCount = 0;
 }
 
 // Valor frontal conservado para telemetria/aproximacion.
@@ -696,6 +709,21 @@ void followRightWall() {
   followRightWallAtPwm(cfg.basePwm);
 }
 
+// PID inverso: cerca de pared izquierda aumenta PWM izquierdo.
+void followLeftWallAtPwm(int basePwm) {
+  errorPid = (float)sLL.filtered - (float)cfg.targetLeftAdc;
+  integralPid = constrain(integralPid + errorPid, -4000.0f, 4000.0f);
+  derivativePid = errorPid - prevErrorPid;
+  correctionPid = cfg.leftKp*errorPid + cfg.leftKi*integralPid + cfg.leftKd*derivativePid;
+  correctionPid = constrain(correctionPid, -(float)cfg.maxCorrection, (float)cfg.maxCorrection);
+  basePwm = constrain(basePwm, MAZE_FORWARD_MIN_PWM, MAZE_FORWARD_MAX_PWM);
+  int leftPwm  = constrain(basePwm + (int)correctionPid, MAZE_FORWARD_MIN_PWM, MAZE_FORWARD_MAX_PWM);
+  int rightPwm = constrain(basePwm - (int)correctionPid, MAZE_FORWARD_MIN_PWM, MAZE_FORWARD_MAX_PWM);
+  setDrive(leftPwm, rightPwm);
+  prevErrorPid = errorPid;
+}
+void followLeftWall() { followLeftWallAtPwm(cfg.basePwm); }
+
 int calculateApproachPwm() {
   if (frontBlocked) return 0;
   return cfg.basePwm;
@@ -707,10 +735,10 @@ int calculateApproachPwm() {
 
 const char* stateName(RobotState s) {
   switch (s) {
-    case STATE_FOLLOW:               return "PID PARED DERECHA";
-    case STATE_RIGHT_OPEN_WAIT:      return "DERECHA / FRENO 500 MS";
-    case STATE_RIGHT_OPEN_ADVANCE:   return "DERECHA / AVANCE 3 CM";
-    case STATE_RIGHT_OPEN_WAIT_TURN: return "DERECHA / ESPERA GIRO";
+    case STATE_FOLLOW: return (activeMode == MODE_WALL_LEFT || activeMode == MODE_MAZE_LEFT) ? "PID PARED IZQUIERDA" : "PID PARED DERECHA";
+    case STATE_SIDE_OPEN_WAIT: return activeMode == MODE_MAZE_LEFT ? "IZQUIERDA / FRENO 500 MS" : "DERECHA / FRENO 500 MS";
+    case STATE_SIDE_OPEN_ADVANCE: return activeMode == MODE_MAZE_LEFT ? "IZQUIERDA / AVANCE 3 CM" : "DERECHA / AVANCE 3 CM";
+    case STATE_SIDE_OPEN_WAIT_TURN: return activeMode == MODE_MAZE_LEFT ? "IZQUIERDA / ESPERA GIRO" : "DERECHA / ESPERA GIRO";
     case STATE_FRONT_WAIT:           return "PARED FRONTAL / FRENO";
     case STATE_TURN_LEFT:            return "GIRO 90 IZQUIERDA";
     case STATE_TURN_RIGHT:           return "GIRO 90 DERECHA";
@@ -722,8 +750,10 @@ const char* stateName(RobotState s) {
 
 const char* modeName(RunMode m) {
   switch (m) {
-    case MODE_WALL:    return "WALL";
-    case MODE_MAZE:    return "MAZE";
+    case MODE_WALL:      return "WALL";
+    case MODE_WALL_LEFT: return "WALL_LEFT";
+    case MODE_MAZE:      return "MAZE";
+    case MODE_MAZE_LEFT: return "MAZE_LEFT";
     case MODE_ENCODER: return "ENCODER";
     case MODE_TEST:
     default:           return "TEST";
@@ -738,6 +768,7 @@ void enterState(RobotState newState) {
 
 void runMaze() {
   uint32_t now = millis();
+  bool leftHand = activeMode == MODE_MAZE_LEFT;
 
   switch (robotState) {
     case STATE_STOPPED:
@@ -755,30 +786,31 @@ void runMaze() {
 
       // Si vuelve a ver pared derecha de manera estable,
       // habilita la proxima apertura.
-      if (rightWallStableCount >= EVENT_CONFIRM_SAMPLES) {
-        rightOpeningArmed = true;
+      if (leftHand) {
+        if (leftWallStableCount >= EVENT_CONFIRM_SAMPLES) leftOpeningArmed = true;
+      } else {
+        if (rightWallStableCount >= EVENT_CONFIRM_SAMPLES) rightOpeningArmed = true;
       }
-
-      // Solo reaccionar a PARED -> APERTURA derecha.
-      // No usa sensores ni aperturas de izquierda para decidir.
-      if (rightOpeningArmed &&
-          rightOpenStableCount >= EVENT_CONFIRM_SAMPLES) {
-        rightOpeningArmed = false;
+      bool armed = leftHand ? leftOpeningArmed : rightOpeningArmed;
+      uint8_t stableOpening = leftHand ? leftOpenStableCount : rightOpenStableCount;
+      if (armed && stableOpening >= EVENT_CONFIRM_SAMPLES) {
+        if (leftHand) leftOpeningArmed = false;
+        else rightOpeningArmed = false;
         stopMotors();
-        enterState(STATE_RIGHT_OPEN_WAIT);
+        enterState(STATE_SIDE_OPEN_WAIT);
         break;
       }
-
-      // Con pared a derecha PID; sin pared, recto hasta encontrarla.
-      if (!rightOpen) {
-        followRightWallAtPwm(cfg.basePwm);
+      bool sideOpen = leftHand ? leftOpen : rightOpen;
+      if (!sideOpen) {
+        if (leftHand) followLeftWallAtPwm(cfg.basePwm);
+        else followRightWallAtPwm(cfg.basePwm);
       } else {
         resetPid();
         setDrive(cfg.basePwm, cfg.basePwm);
       }
       break;
 
-    case STATE_RIGHT_OPEN_WAIT:
+    case STATE_SIDE_OPEN_WAIT:
       stopMotors();
       if (frontBlocked) {
         frontLeftTurns = 0;
@@ -787,11 +819,11 @@ void runMaze() {
       }
       if (now - stateStartMs >= (uint32_t)cfg.openingWaitMs) {
         captureMoveStart();
-        enterState(STATE_RIGHT_OPEN_ADVANCE);
+        enterState(STATE_SIDE_OPEN_ADVANCE);
       }
       break;
 
-    case STATE_RIGHT_OPEN_ADVANCE: {
+    case STATE_SIDE_OPEN_ADVANCE: {
       // Solo 5 cm rectos medidos por promedio de ambos encoders.
       // Si aparece pared frontal, detener primero.
       if (frontBlocked) {
@@ -805,7 +837,7 @@ void runMaze() {
         (uint32_t)roundf(cfg.openingAdvanceCm * TICKS_PER_CM);
       if (getMoveStraightCm() >= cfg.openingAdvanceCm) {
         stopMotors();
-        enterState(STATE_RIGHT_OPEN_WAIT_TURN);
+        enterState(STATE_SIDE_OPEN_WAIT_TURN);
         break;
       }
 
@@ -824,11 +856,11 @@ void runMaze() {
       break;
     }
 
-    case STATE_RIGHT_OPEN_WAIT_TURN:
+    case STATE_SIDE_OPEN_WAIT_TURN:
       stopMotors();
       if (now - stateStartMs >= 300UL) {
         captureMoveStart();
-        enterState(STATE_TURN_RIGHT);
+        enterState(leftHand ? STATE_TURN_LEFT : STATE_TURN_RIGHT);
       }
       break;
 
@@ -839,7 +871,7 @@ void runMaze() {
       if (now - stateStartMs >= (uint32_t)cfg.decisionWaitMs) {
         if (frontLeftTurns < 2) frontLeftTurns++;
         captureMoveStart();
-        enterState(STATE_TURN_LEFT);
+        enterState(leftHand ? STATE_TURN_RIGHT : STATE_TURN_LEFT);
       }
       break;
 
@@ -895,7 +927,7 @@ void runMaze() {
       // Repetir evaluacion tras la pausa configurada y girar otra vez.
       // El tiempo de pausa y los encoders evitan giros encadenados sin control.
       if (frontBlocked) {
-        Serial.println("AUS_KIM: frente bloqueado despues del giro; buscando salida a izquierda.");
+        Serial.println(leftHand ? "AUS_KIM: frente bloqueado; buscando salida a derecha." : "AUS_KIM: frente bloqueado despues del giro; buscando salida a izquierda.");
         enterState(STATE_FRONT_WAIT);
         break;
       }
@@ -904,6 +936,9 @@ void runMaze() {
       rightOpenStableCount = 0;
       rightWallStableCount = 0;
       rightOpeningArmed = false;
+      leftOpenStableCount = 0;
+      leftWallStableCount = 0;
+      leftOpeningArmed = false;
       resetPid();
       enterState(STATE_FOLLOW);
       break;
@@ -924,13 +959,14 @@ void updateControl() {
     return;
   }
 
-  if (activeMode == MODE_WALL) {
+  if (activeMode == MODE_WALL || activeMode == MODE_WALL_LEFT) {
     robotState = STATE_FOLLOW;
-    followRightWall();
+    if (activeMode == MODE_WALL_LEFT) followLeftWall();
+    else followRightWall();
     return;
   }
 
-  if (activeMode == MODE_MAZE) {
+  if (activeMode == MODE_MAZE || activeMode == MODE_MAZE_LEFT) {
     runMaze();
     return;
   }
@@ -2191,6 +2227,10 @@ void handleStatus() {
   json += "\"ki\":" + String(cfg.ki, 4) + ",";
   json += "\"kd\":" + String(cfg.kd, 4) + ",";
   json += "\"targetRightAdc\":" + String(cfg.targetRightAdc) + ",";
+  json += "\"targetLeftAdc\":" + String(cfg.targetLeftAdc) + ",";
+  json += "\"leftKp\":" + String(cfg.leftKp, 4) + ",";
+  json += "\"leftKi\":" + String(cfg.leftKi, 4) + ",";
+  json += "\"leftKd\":" + String(cfg.leftKd, 4) + ",";
   json += "\"basePwm\":" + String(cfg.basePwm) + ",";
   json += "\"maxCorrection\":" + String(cfg.maxCorrection) + ",";
   json += "\"frontWallAdc\":" + String(cfg.frontWallAdc) + ",";
@@ -2239,6 +2279,9 @@ void handleMode() {
   rightOpenStableCount = 0;
   rightWallStableCount = 0;
   rightOpeningArmed = false;
+  leftOpenStableCount = 0;
+  leftWallStableCount = 0;
+  leftOpeningArmed = false;
   frontLeftTurns = 0;
 
   if (mode == "TEST") {
@@ -2247,6 +2290,10 @@ void handleMode() {
     activeMode = MODE_WALL;
   } else if (mode == "MAZE") {
     activeMode = MODE_MAZE;
+  } else if (mode == "MAZE_LEFT") {
+    activeMode = MODE_MAZE_LEFT;
+  } else if (mode == "WALL_LEFT") {
+    activeMode = MODE_WALL_LEFT;
   } else if (mode == "ENCODER") {
     activeMode = MODE_ENCODER;
     encoderTestAction = ENC_TEST_NONE;
@@ -2254,7 +2301,7 @@ void handleMode() {
     encoderTestRequestedCm = 0.0f;
     captureMoveStart();
   } else {
-    server.send(400, "text/plain", "mode debe ser TEST, WALL, MAZE o ENCODER");
+    server.send(400, "text/plain", "mode debe ser TEST, WALL, WALL_LEFT, MAZE, MAZE_LEFT o ENCODER");
     return;
   }
 
@@ -2282,11 +2329,14 @@ void handleRun() {
     lastDecisionMs = millis();
     running = true;
 
-    if (activeMode == MODE_MAZE) {
+    if (activeMode == MODE_MAZE || activeMode == MODE_MAZE_LEFT) {
       frontWallStableCount = 0;
       rightOpenStableCount = 0;
       rightWallStableCount = 0;
       rightOpeningArmed = false;
+      leftOpenStableCount = 0;
+      leftWallStableCount = 0;
+      leftOpeningArmed = false;
       frontLeftTurns = 0;
       enterState(STATE_FOLLOW);
     } else {
@@ -2428,6 +2478,10 @@ void handleConfig() {
   if (server.hasArg("kp")) cfg.kp = server.arg("kp").toFloat();
   if (server.hasArg("ki")) cfg.ki = server.arg("ki").toFloat();
   if (server.hasArg("kd")) cfg.kd = server.arg("kd").toFloat();
+  if (server.hasArg("leftKp")) cfg.leftKp = constrain(server.arg("leftKp").toFloat(), 0.0f, 20.0f);
+  if (server.hasArg("leftKi")) cfg.leftKi = constrain(server.arg("leftKi").toFloat(), 0.0f, 20.0f);
+  if (server.hasArg("leftKd")) cfg.leftKd = constrain(server.arg("leftKd").toFloat(), 0.0f, 20.0f);
+  if (server.hasArg("targetLeftAdc")) cfg.targetLeftAdc = constrain(server.arg("targetLeftAdc").toInt(), 0, 4095);
 
   if (server.hasArg("targetRightAdc"))
     cfg.targetRightAdc = constrain(server.arg("targetRightAdc").toInt(), 0, 4095);
@@ -2522,6 +2576,9 @@ void handleStop() {
   rightOpenStableCount = 0;
   rightWallStableCount = 0;
   rightOpeningArmed = false;
+  leftOpenStableCount = 0;
+  leftWallStableCount = 0;
+  leftOpeningArmed = false;
   frontLeftTurns = 0;
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "STOP");
