@@ -121,6 +121,13 @@ enum RunMode : uint8_t {
   MODE_MAZE_LEFT
 };
 
+enum TimedTestAction : uint8_t {
+  TIMED_NONE = 0,
+  TIMED_FORWARD,
+  TIMED_LEFT_90,
+  TIMED_RIGHT_90
+};
+
 enum EncoderTestAction : uint8_t {
   ENC_TEST_NONE = 0,
   ENC_TEST_RIGHT_45,
@@ -289,6 +296,10 @@ uint32_t encoderTestStartMs = 0;
 int encoderTestPwm = 155;
 float encoderTestTicksPerCm = TICKS_PER_CM;
 float encoderTestRequestedCm = 0.0f;
+
+// Pruebas de calibracion temporal SIN encoders.
+TimedTestAction timedTestAction = TIMED_NONE;
+uint32_t timedTestStartMs = 0;
 
 // Encoders nativos
 volatile int32_t encoderLeft = 0;
@@ -808,7 +819,7 @@ void runMaze() {
         else followRightWallAtPwm(cfg.basePwm);
       } else {
         resetPid();
-        setDrive(cfg.basePwm, cfg.basePwm);
+        setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
       }
       break;
     }
@@ -909,11 +920,55 @@ void runMaze() {
 }
 
 // ============================================================
+// PRUEBA DE MANIOBRAS POR TIEMPO (sin depender de encoders)
+// ============================================================
+
+const char* timedTestName(TimedTestAction action) {
+  switch (action) {
+    case TIMED_FORWARD:  return "AVANCE CORTO";
+    case TIMED_LEFT_90:  return "GIRO IZQUIERDA";
+    case TIMED_RIGHT_90: return "GIRO DERECHA";
+    default:             return "NINGUNA";
+  }
+}
+
+void runTimedTest() {
+  if (timedTestAction == TIMED_NONE) return;
+  if (!running) {
+    timedTestAction = TIMED_NONE;
+    stopMotors();
+    return;
+  }
+
+  uint32_t elapsed = millis() - timedTestStartMs;
+  uint32_t duration = 0;
+  if (timedTestAction == TIMED_FORWARD) duration = (uint32_t)cfg.openingAdvanceMs;
+  if (timedTestAction == TIMED_LEFT_90) duration = (uint32_t)cfg.turn90LeftMs;
+  if (timedTestAction == TIMED_RIGHT_90) duration = (uint32_t)cfg.turn90RightMs;
+
+  // Frente tiene prioridad durante la prueba de avance.
+  if (elapsed >= duration || (timedTestAction == TIMED_FORWARD && frontBlocked)) {
+    stopMotors();
+    timedTestAction = TIMED_NONE;
+    running = false;
+    return;
+  }
+  if (timedTestAction == TIMED_FORWARD) setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
+  else if (timedTestAction == TIMED_LEFT_90) setDrive(-cfg.turnPwm, +cfg.turnPwm);
+  else if (timedTestAction == TIMED_RIGHT_90) setDrive(+cfg.turnPwm, -cfg.turnPwm);
+}
+
+// ============================================================
 // 10. CONTROL PRINCIPAL
 // ============================================================
 
 void updateControl() {
   updateAllSensors();
+
+  if (timedTestAction != TIMED_NONE) {
+    runTimedTest();
+    return;
+  }
 
   if (!running) {
     if (activeMode != MODE_TEST) {
@@ -999,6 +1054,7 @@ void handleStatus() {
 
   json += "{";
   json += "\"running\":" + String(running ? "true" : "false") + ",";
+  json += "\"timedTestAction\":\"" + String(timedTestName(timedTestAction)) + "\",";
   json += "\"mode\":\"" + String(modeName(activeMode)) + "\",";
   json += "\"state\":\"" + String(stateName(robotState)) + "\",";
   json += "\"stopReason\":\"" + stopReason + "\",";
@@ -1111,6 +1167,7 @@ void handleMode() {
   String mode = server.arg("mode");
 
   // Siempre se detiene al cambiar de modo.
+  timedTestAction = TIMED_NONE;
   running = false;
   robotState = STATE_STOPPED;
   pendingTurnState = STATE_STOPPED;
@@ -1197,6 +1254,10 @@ void handleRun() {
 }
 
 void handleMotor() {
+  if (timedTestAction != TIMED_NONE) {
+    server.send(409, "text/plain", "Prueba temporizada en curso: usa STOP");
+    return;
+  }
   if (activeMode != MODE_TEST) {
     server.send(403, "text/plain", "Control manual solo disponible en modo TEST");
     return;
@@ -1231,6 +1292,42 @@ void handleMotor() {
 
   lastHeartbeatMs = millis();
   server.send(200, "text/plain", "OK");
+}
+
+// Prueba de avance / giros por tiempo: independiente de Maze y encoders.
+void handleTimedTest() {
+  if (activeMode != MODE_TEST) {
+    server.send(403, "text/plain", "Seleccionar modo TEST");
+    return;
+  }
+  if (!server.hasArg("action")) {
+    server.send(400, "text/plain", "Falta action");
+    return;
+  }
+  String action = server.arg("action");
+  if (action == "STOP") {
+    timedTestAction = TIMED_NONE;
+    running = false;
+    stopMotors();
+    server.send(200, "text/plain", "STOP");
+    return;
+  }
+  if (running || motorLeftCmd != 0 || motorRightCmd != 0) {
+    server.send(409, "text/plain", "Detener motores antes de probar");
+    return;
+  }
+  if (action == "FWD") timedTestAction = TIMED_FORWARD;
+  else if (action == "L90") timedTestAction = TIMED_LEFT_90;
+  else if (action == "R90") timedTestAction = TIMED_RIGHT_90;
+  else {
+    server.send(400, "text/plain", "action debe ser FWD, L90 o R90");
+    return;
+  }
+  timedTestStartMs = millis();
+  lastHeartbeatMs = millis();
+  running = true;
+  stopReason = "NINGUNA";
+  server.send(200, "text/plain", "RUN");
 }
 
 void handleEncoderTest() {
@@ -1417,6 +1514,7 @@ void handlePing() {
 }
 
 void handleStop() {
+  timedTestAction = TIMED_NONE;
   stopReason = "PARADA_MANUAL_O_PAGINA_CERRADA";
   Serial.println("AUS_KIM STOP: " + stopReason);
   running = false;
@@ -1492,6 +1590,7 @@ void setup() {
   server.on("/api/run", HTTP_GET, handleRun);
   server.on("/api/motor", HTTP_GET, handleMotor);
   server.on("/api/encoder_test", HTTP_GET, handleEncoderTest);
+  server.on("/api/timed_test", HTTP_GET, handleTimedTest);
   server.on("/api/config", HTTP_GET, handleConfig);
   server.on("/api/reset_encoders", HTTP_GET, handleResetEncoders);
   server.on("/api/ping", HTTP_GET, handlePing);
