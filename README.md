@@ -419,3 +419,22 @@ El firmware **AUS_KIM_RACE** inicia exclusivamente el modo `MAZE` (regla de mano
 - STOP manual y corte por perdida de comunicacion Wi-Fi permanecen activos.
 
 La pestaña Resolver laberinto del Test Suite muestra los nuevos umbrales y permite calibrar el avance de 15 cm aproximados sin necesidad de hacer una carrera completa. Los valores actualizados mediante navegador son temporales hasta grabar el firmware.
+
+
+## Carrera autonoma aun sin Wi-Fi
+
+El firmware distingue dos tipos de movimiento:
+
+- **Carrera RMP**: al pulsar el logo **LARGAR** en la interfaz `/race` (o `/` en el firmware Race), el navegador envia `/api/mode?mode=MAZE` y luego `/api/run?state=1&autonomous=1`. El ESP32-S3 sigue ejecutando el laberinto localmente si se desconecta el celular o se interrumpe el heartbeat Wi-Fi.
+- **Test Suite (pruebas, PID, motores, encoders y largada de pruebas)**: permanece activo el corte de motores por falta de heartbeat durante **1500 ms**, para que las pruebas supervisadas no queden descontroladas si se pierde el navegador.
+
+La carrera autonoma **NO elimina las paradas locales**:
+- **STOP fisico**: `GPIO0`, configurado con `INPUT_PULLUP`, activo al conectarlo a GND (35 ms de antirrebote). En placas que conectan el boton BOOT a GPIO0, se puede utilizar ese boton. **Comprobar el conexionado real de esta variante ESP32-S3 SuperMini, el acceso al boton y su funcionamiento con el robot elevado antes de competir.**
+- **Limite maximo de carrera**: 120 segundos a partir de la largada; se detienen los motores aunque no haya Wi-Fi.
+- **STOP remoto**: `/api/stop` sigue funcionando mientras exista conexion. Si se pierde el Wi-Fi, el telefono **ya no sirve como control de emergencia**: usar el boton local probado o desconectar fisicamente la alimentacion.
+- Los sensores Sharp siguen frenando ante pared frontal durante los avances, y la navegacion conserva el algoritmo de pared derecha.
+
+El estado `/api/status` expone `autonomousRace` y `raceElapsedMs`. La pantalla Race informa que puede seguir corriendo sin Wi-Fi. **No arrancar una carrera autonoma hasta haber comprobado una parada local confiable**. Presionar GPIO0 al reiniciar puede poner el ESP32-S3 en modo descarga; por eso el boton se utiliza como parada durante la ejecucion, no manteniendolo presionado al encender.
+
+Solo el modo `MAZE` permite `autonomous=1`. El cambio esta disponible en Test Suite y Race porque el firmware Race se genera a partir del Test Suite y sincroniza sus archivos `.h`.
+
