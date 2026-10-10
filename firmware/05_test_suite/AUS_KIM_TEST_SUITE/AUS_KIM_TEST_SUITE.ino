@@ -142,9 +142,7 @@ enum EncoderTestAction : uint8_t {
 enum RobotState : uint8_t {
   STATE_STOPPED = 0,
   STATE_FOLLOW,
-  STATE_SIDE_OPEN_WAIT,
-  STATE_SIDE_OPEN_ADVANCE,
-  STATE_SIDE_OPEN_WAIT_TURN,
+  STATE_CORNER_ENTRY,
   STATE_FRONT_WAIT,
   STATE_TURN_LEFT,
   STATE_TURN_RIGHT,
@@ -189,16 +187,19 @@ struct ControlConfig {
   int turn90LeftTicks = 125;
   int turn180Ticks = 250;
 
-  // Apertura derecha: parar 500 ms, avanzar ~15 cm (por tiempo)
-  // y frenar 300 ms antes de girar hacia la derecha.
-  // 500 ms es un punto inicial NO calibrado. Ajustar segun pista/motores.
-  int openingWaitMs = 500;
-  float openingAdvanceCm = 15.0f; // objetivo de referencia; NO mide cm
-  int openingAdvanceMs = 650;     // provisional; calibrar distancia REAL de 15 cm
-  int openingLeftPwm = 165;       // ajuste independiente para motores distintos
+  // Calibraciones anteriores conservadas para la prueba de avance:
+  int openingWaitMs = 500;      // valor historico; el nuevo Maze no espera 500 ms
+  float openingAdvanceCm = 15.0f; // referencia anterior; no mide distancia
+  int openingAdvanceMs = 650;   // SOLO prueba recta, no se usa en Maze
+  int openingLeftPwm = 165;
   int openingRightPwm = 165;
-  int turn90LeftMs = 174;        // punto de partida a calibrar
-  int turn90RightMs = 166;
+  // Los tiempos reales del ultimo commit corresponden al giro sobre el eje.
+  // En el Maze nuevo se hace giro abierto (una rueda avanza y otra para):
+  int turn90LeftMs = 174;       // mantener calibracion del giro sobre eje
+  int turn90RightMs = 166;      // mantener calibracion del giro sobre eje
+  int cornerEntryMs = 100;     // avance corto a la esquina antes del giro abierto
+  float openTurnLeftFactor = 2.0f;  // giro abierto: 174 ms x 2 = 348 ms iniciales
+  float openTurnRightFactor = 2.0f; // giro abierto: 166 ms x 2 = 332 ms iniciales
   // Avance recto independiente del PID de pared derecha.
   float straightLeftTicksPerCm = 20.95f;
   float straightRightTicksPerCm = 20.95f;
@@ -756,12 +757,10 @@ int calculateApproachPwm() {
 const char* stateName(RobotState s) {
   switch (s) {
     case STATE_FOLLOW: return (activeMode == MODE_WALL_LEFT || activeMode == MODE_MAZE_LEFT) ? "PID PARED IZQUIERDA" : "PID PARED DERECHA";
-    case STATE_SIDE_OPEN_WAIT: return activeMode == MODE_MAZE_LEFT ? "IZQUIERDA / FRENO 500 MS" : "DERECHA / FRENO 500 MS";
-    case STATE_SIDE_OPEN_ADVANCE: return activeMode == MODE_MAZE_LEFT ? "IZQUIERDA / AVANCE POR TIEMPO" : "DERECHA / AVANCE POR TIEMPO";
-    case STATE_SIDE_OPEN_WAIT_TURN: return activeMode == MODE_MAZE_LEFT ? "IZQUIERDA / ESPERA GIRO" : "DERECHA / ESPERA GIRO";
+    case STATE_CORNER_ENTRY: return activeMode == MODE_MAZE_LEFT ? "ENTRADA CURVA IZQUIERDA" : "ENTRADA CURVA DERECHA";
     case STATE_FRONT_WAIT:           return "PARED FRONTAL / FRENO";
-    case STATE_TURN_LEFT:            return "GIRO 90 IZQUIERDA";
-    case STATE_TURN_RIGHT:           return "GIRO 90 DERECHA";
+    case STATE_TURN_LEFT:            return "GIRO ABIERTO IZQUIERDA";
+    case STATE_TURN_RIGHT:           return "GIRO ABIERTO DERECHA";
     case STATE_POST_TURN_WAIT:       return "PAUSA POST GIRO";
     case STATE_STOPPED:
     default:                         return "DETENIDO";
@@ -786,9 +785,19 @@ void enterState(RobotState newState) {
   resetPid();
 }
 
+// Regla simple de la pared: derecha en Race, izquierda solo para pruebas.
+// 1. Seguir pared por PID. 2. Apertura lateral -> entrada corta + curva abierta.
+// 3. Si frente bloqueado y sin salida lateral -> curva abierta al lado contrario.
+// 4. En cada curva avanza solo la rueda exterior: NO girar sobre el eje.
+// Duraciones de curva = tiempo 90 del ultimo commit x factor calibrable.
+// No hay encoders ni recorridos largos de 15 cm en el modo Maze.
 void runMaze() {
   uint32_t now = millis();
   bool leftHand = activeMode == MODE_MAZE_LEFT;
+  uint8_t stableSideOpening = leftHand ? leftOpenStableCount : rightOpenStableCount;
+  uint8_t stableSideWall = leftHand ? leftWallStableCount : rightWallStableCount;
+  bool sideOpen = leftHand ? leftOpen : rightOpen;
+  bool &openingArmed = leftHand ? leftOpeningArmed : rightOpeningArmed;
 
   switch (robotState) {
     case STATE_STOPPED:
@@ -796,143 +805,99 @@ void runMaze() {
       break;
 
     case STATE_FOLLOW: {
-      // Prioridad: apertura del lado elegido > pared frontal.
-      // A la derecha siempre tomar el hueco confirmado antes de girar izquierda.
-      // Si empieza sin haber visto pared, ante una pared frontal se permite
-      // tomar una salida derecha confirmada igualmente.
-      // Habilitar apertura solo despues de detectar pared en ese lado.
-      if (leftHand) {
-        if (leftWallStableCount >= EVENT_CONFIRM_SAMPLES) leftOpeningArmed = true;
-      } else {
-        if (rightWallStableCount >= EVENT_CONFIRM_SAMPLES) rightOpeningArmed = true;
-      }
-      bool armed = leftHand ? leftOpeningArmed : rightOpeningArmed;
-      uint8_t stableOpening = leftHand ? leftOpenStableCount : rightOpenStableCount;
-      if (stableOpening >= EVENT_CONFIRM_SAMPLES && (armed || frontBlocked)) {
-        if (leftHand) leftOpeningArmed = false;
-        else rightOpeningArmed = false;
-        stopMotors();
-        enterState(STATE_SIDE_OPEN_WAIT);
+      if (stableSideWall >= EVENT_CONFIRM_SAMPLES) openingArmed = true;
+
+      // La apertura confirmada tiene prioridad frente a la pared frontal.
+      // Si el frente esta cerrado, se puede girar hacia un hueco lateral
+      // confirmado aun si no habiamos visto pared lateral al arrancar.
+      if (stableSideOpening >= EVENT_CONFIRM_SAMPLES &&
+          (openingArmed || frontBlocked)) {
+        openingArmed = false;
+        if (frontBlocked) {
+          stopMotors();
+          enterState(leftHand ? STATE_TURN_LEFT : STATE_TURN_RIGHT);
+        } else {
+          // Pasar apenas la esquina; NO avanzar 15 cm antes de girar.
+          enterState(STATE_CORNER_ENTRY);
+        }
         break;
       }
-      // Solo cuando NO hay salida lateral se resuelve la pared frontal.
+
       if (frontBlocked) {
         stopMotors();
-        frontLeftTurns = 0;
         enterState(STATE_FRONT_WAIT);
         break;
       }
-      bool sideOpen = leftHand ? leftOpen : rightOpen;
-      if (!sideOpen) {
-        if (leftHand) followLeftWallAtPwm(cfg.basePwm);
-        else followRightWallAtPwm(cfg.basePwm);
-      } else {
+
+      if (sideOpen) {
+        // Sin pared cercana, seguir adelante hasta localizar otra pared.
         resetPid();
         setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
+      } else if (leftHand) {
+        followLeftWallAtPwm(cfg.basePwm);
+      } else {
+        followRightWallAtPwm(cfg.basePwm);
       }
       break;
     }
 
-    case STATE_SIDE_OPEN_WAIT:
-      stopMotors();
-      if (frontBlocked) {
-        // Ya se eligio la apertura lateral: no girar al lado contrario.
-        // Por proximidad frontal, omitir el avance largo y preparar giro.
-        enterState(STATE_SIDE_OPEN_WAIT_TURN);
-        break;
-      }
-      if (now - stateStartMs >= (uint32_t)cfg.openingWaitMs) {
-
-        enterState(STATE_SIDE_OPEN_ADVANCE);
-      }
-      break;
-
-    case STATE_SIDE_OPEN_ADVANCE:
-      // Avance hacia apertura (~15 cm), temporizado SIN encoders.
-      // Si se detecta pared frontal, detener el avance de inmediato;
-      // no seguir hacia la pared y girar hacia la apertura elegida.
-      if (frontBlocked) {
-        stopMotors();
-        enterState(STATE_SIDE_OPEN_WAIT_TURN);
-        break;
-      }
-      if (now - stateStartMs >= (uint32_t)cfg.openingAdvanceMs) {
-        stopMotors();
-        enterState(STATE_SIDE_OPEN_WAIT_TURN);
-        break;
-      }
-      setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
-      break;
-
-    case STATE_SIDE_OPEN_WAIT_TURN:
-      stopMotors();
-      if (now - stateStartMs >= 300UL) {
-
+    case STATE_CORNER_ENTRY:
+      // Entrada corta y continua, no detenerse 500 ms en la interseccion.
+      if (frontBlocked || now - stateStartMs >= (uint32_t)cfg.cornerEntryMs) {
+        if (frontBlocked) stopMotors(); // Nunca avanzar contra una pared.
         enterState(leftHand ? STATE_TURN_LEFT : STATE_TURN_RIGHT);
+      } else {
+        setDrive(cfg.openingLeftPwm, cfg.openingRightPwm);
       }
       break;
 
     case STATE_FRONT_WAIT:
       stopMotors();
-      // Volver a evaluar la apertura lateral. Si la derecha esta libre,
-      // tomarla; solo girar izquierda si NO hay salida derecha.
-      if ((leftHand ? leftOpenStableCount : rightOpenStableCount) >= EVENT_CONFIRM_SAMPLES) {
-        enterState(STATE_SIDE_OPEN_WAIT_TURN);
-        break;
-      }
-      if (now - stateStartMs >= (uint32_t)cfg.decisionWaitMs) {
-        if (frontLeftTurns < 2) frontLeftTurns++;
+      // Frente cerrado: priorizar salida derecha en Race.
+      if (stableSideOpening >= EVENT_CONFIRM_SAMPLES) {
+        openingArmed = false;
+        enterState(leftHand ? STATE_TURN_LEFT : STATE_TURN_RIGHT);
+      } else if (now - stateStartMs >= (uint32_t)cfg.decisionWaitMs) {
         enterState(leftHand ? STATE_TURN_RIGHT : STATE_TURN_LEFT);
       }
       break;
 
-    case STATE_TURN_LEFT:
-      // Giro por tiempo, calibrable, no requiere encoder.
-      if (now - stateStartMs >= (uint32_t)cfg.turn90LeftMs) {
+    case STATE_TURN_RIGHT: {
+      // Giro ABIERTO: rueda izquierda hacia adelante, derecha parada.
+      // 166 ms ultimo commit (giro sobre eje); x factor para giro abierto.
+      uint32_t duration = (uint32_t)roundf(cfg.turn90RightMs * cfg.openTurnRightFactor);
+      if (now - stateStartMs >= duration) {
         stopMotors();
         enterState(STATE_POST_TURN_WAIT);
-        break;
+      } else {
+        setDrive(+cfg.turnPwm, 0);
       }
-      setDrive(-cfg.turnPwm, +cfg.turnPwm);
       break;
+    }
 
-    case STATE_TURN_RIGHT:
-      if (now - stateStartMs >= (uint32_t)cfg.turn90RightMs) {
+    case STATE_TURN_LEFT: {
+      // Giro ABIERTO: rueda derecha hacia adelante, izquierda parada.
+      // 174 ms ultimo commit (giro sobre eje); x factor para giro abierto.
+      uint32_t duration = (uint32_t)roundf(cfg.turn90LeftMs * cfg.openTurnLeftFactor);
+      if (now - stateStartMs >= duration) {
         stopMotors();
         enterState(STATE_POST_TURN_WAIT);
-        break;
+      } else {
+        setDrive(0, +cfg.turnPwm);
       }
-      setDrive(+cfg.turnPwm, -cfg.turnPwm);
       break;
+    }
 
     case STATE_POST_TURN_WAIT:
+      // Releer sensores tras una pausa corta y seguir buscando pared.
       stopMotors();
-      if (now - stateStartMs < 300UL) {
-        break;
+      if (now - stateStartMs >= BRAKE_SETTLE_MS) {
+        rightOpenStableCount = 0;
+        leftOpenStableCount = 0;
+        rightOpeningArmed = false;
+        leftOpeningArmed = false;
+        enterState(STATE_FOLLOW);
       }
-
-      // Si sigue detectando pared frontal, no cancelar la carrera.
-      // Repetir evaluacion tras la pausa configurada y girar otra vez.
-      // La pausa y el limite temporal de cada giro impiden giros sin fin.
-      if (frontBlocked) {
-        if ((leftHand ? leftOpenStableCount : rightOpenStableCount) >= EVENT_CONFIRM_SAMPLES) {
-          enterState(STATE_SIDE_OPEN_WAIT_TURN);
-        } else {
-          Serial.println(leftHand ? "AUS_KIM: frente bloqueado; buscando salida a derecha." : "AUS_KIM: frente bloqueado sin salida derecha; girar izquierda.");
-          enterState(STATE_FRONT_WAIT);
-        }
-        break;
-      }
-
-      frontLeftTurns = 0;
-      rightOpenStableCount = 0;
-      rightWallStableCount = 0;
-      rightOpeningArmed = false;
-      leftOpenStableCount = 0;
-      leftWallStableCount = 0;
-      leftOpeningArmed = false;
-      resetPid();
-      enterState(STATE_FOLLOW);
       break;
   }
 }
@@ -1155,6 +1120,9 @@ void handleStatus() {
   json += "\"openingWaitMs\":" + String(cfg.openingWaitMs) + ",";
   json += "\"openingAdvanceCm\":" + String(cfg.openingAdvanceCm, 1) + ",";
   json += "\"openingAdvanceMs\":" + String(cfg.openingAdvanceMs) + ",";
+  json += "\"cornerEntryMs\":" + String(cfg.cornerEntryMs) + ",";
+  json += "\"openTurnLeftFactor\":" + String(cfg.openTurnLeftFactor, 2) + ",";
+  json += "\"openTurnRightFactor\":" + String(cfg.openTurnRightFactor, 2) + ",";
   json += "\"openingLeftPwm\":" + String(cfg.openingLeftPwm) + ",";
   json += "\"openingRightPwm\":" + String(cfg.openingRightPwm) + ",";
   json += "\"turn90LeftMs\":" + String(cfg.turn90LeftMs) + ",";
@@ -1492,6 +1460,12 @@ void handleConfig() {
     cfg.openingAdvanceCm = constrain(server.arg("openingAdvanceCm").toFloat(), 1.0f, 30.0f);
   if (server.hasArg("openingAdvanceMs"))
     cfg.openingAdvanceMs = constrain(server.arg("openingAdvanceMs").toInt(), 30, 2500);
+  if (server.hasArg("cornerEntryMs"))
+    cfg.cornerEntryMs = constrain(server.arg("cornerEntryMs").toInt(), 0, 400);
+  if (server.hasArg("openTurnLeftFactor"))
+    cfg.openTurnLeftFactor = constrain(server.arg("openTurnLeftFactor").toFloat(), 1.0f, 4.0f);
+  if (server.hasArg("openTurnRightFactor"))
+    cfg.openTurnRightFactor = constrain(server.arg("openTurnRightFactor").toFloat(), 1.0f, 4.0f);
   if (server.hasArg("openingLeftPwm"))
     cfg.openingLeftPwm = constrain(server.arg("openingLeftPwm").toInt(), MIN_MOVING_PWM, 255);
   if (server.hasArg("openingRightPwm"))
