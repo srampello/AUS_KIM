@@ -199,11 +199,11 @@ struct ControlConfig {
   // 500 ms es un punto inicial NO calibrado. Ajustar segun pista/motores.
   int openingWaitMs = 500;
   float openingAdvanceCm = 15.0f; // objetivo de referencia; NO mide cm
-  int openingAdvanceMs = 500;     // provisional; calibrar distancia REAL de 15 cm
+  int openingAdvanceMs = 650;     // provisional; calibrar distancia REAL de 15 cm
   int openingLeftPwm = 165;       // ajuste independiente para motores distintos
   int openingRightPwm = 165;
-  int turn90LeftMs = 160;        // punto de partida a calibrar
-  int turn90RightMs = 160;
+  int turn90LeftMs = 174;        // punto de partida a calibrar
+  int turn90RightMs = 166;
   // Avance recto independiente del PID de pared derecha.
   float straightLeftTicksPerCm = 20.95f;
   float straightRightTicksPerCm = 20.95f;
