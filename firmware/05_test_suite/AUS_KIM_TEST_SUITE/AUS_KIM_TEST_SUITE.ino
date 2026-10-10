@@ -187,11 +187,11 @@ struct ControlConfig {
   // -> frenar 300 ms -> girar por tiempo -> frenar 300 ms.
   int openingWaitMs = 500;
   float openingAdvanceCm = 3.0f;  // referencia historica, NO mide recorrido
-  int openingAdvanceMs = 180;     // calibrar tiempo en pista
+  int openingAdvanceMs = 100;     // calibrar tiempo en pista
   int openingLeftPwm = 180;       // ajuste independiente para motores distintos
   int openingRightPwm = 180;
-  int turn90LeftMs = 240;        // punto de partida a calibrar
-  int turn90RightMs = 240;
+  int turn90LeftMs = 160;        // punto de partida a calibrar
+  int turn90RightMs = 160;
   // Avance recto independiente del PID de pared derecha.
   float straightLeftTicksPerCm = 20.95f;
   float straightRightTicksPerCm = 20.95f;
