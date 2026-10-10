@@ -378,3 +378,27 @@ Rutas web:
 - En el firmware Race, la vista de carrera aparece en la ruta `/`.
 
 El cambio solo reorganiza los archivos de interfaz y no modifica los parametros de navegacion ni la logica del robot.
+
+## Navegacion actual: sin encoders en modo autonomo (octubre de 2026)
+
+El seguimiento de pared derecha e izquierda usa los sensores Sharp y PID. Al detectar pared frontal, frena **300 ms** y gira hacia el lado contrario a la pared elegida: izquierda si sigue la derecha, o derecha si sigue la izquierda. Despues espera **300 ms**, vuelve a leer los sensores y repite si el frente continua bloqueado.
+
+Cuando detecta una apertura del lado elegido, primero espera **500 ms**, avanza una distancia **aproximada** por tiempo (no con encoders), espera **300 ms**, gira hacia esa apertura y espera otros **300 ms** antes de retomar el PID.
+
+Los encoders **ya no participan en ninguna decision, avance ni giro de los modos MAZE y MAZE_LEFT**. Permanecen en la pestana de diagnostico por si se desea revisarlos mas adelante.
+
+### Calibracion de maniobras temporizadas
+
+| Parametro API | Inicial | Descripcion |
+| --- | ---: | --- |
+| `openingAdvanceMs` | 100 ms | Duracion del avance corto; ajustar para acercarse a 3 cm |
+| `openingLeftPwm` | 180 | PWM del motor izquierdo en avance corto / sin pared |
+| `openingRightPwm` | 180 | PWM del motor derecho en avance corto / sin pared |
+| `turn90LeftMs` | 160 ms | Giro izquierdo aproximado de 90 grados |
+| `turn90RightMs` | 160 ms | Giro derecho aproximado de 90 grados |
+| `turnPwm` | 180 | PWM para ambos sentidos de giro |
+
+Estos son **valores conservadores de prueba, no mediciones calibradas**. Como los motores tienen distinta respuesta, no se garantiza que el avance sea de 3 cm ni que los giros sean de 90 grados hasta medirlos fisicamente. El Test Suite ahora permite probar por separado **avance corto**, **giro izquierdo** y **giro derecho** desde Resolver laberinto, sin necesidad de ejecutar el recorrido completo. Las pruebas utilizan `/api/timed_test` y se detienen automaticamente al completar la duracion. Calibrar inicialmente con el robot en espacio despejado y usar STOP ante cualquier desvio.
+
+El boton STOP y el corte por perdida de comunicacion Wi-Fi permanecen activos. Las configuraciones modificadas en la interfaz son temporales (RAM); para grabarlas de manera permanente, hay que cambiar los valores iniciales en el Test Suite y volver a cargar el firmware. El firmware de carrera se genera desde el Test Suite mediante el workflow de GitHub Actions.
+
