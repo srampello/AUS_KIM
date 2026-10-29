@@ -1,6 +1,10 @@
-# Conexiones de AUS_KIM
+# AUS_KIM V1 (ESP32-S3) — conexiones históricas
 
-Este documento refleja el cableado real verificado del robot y las correcciones aplicadas en la interfaz de diagnostico.
+> **ATENCIÓN:** este documento corresponde **únicamente a la primera versión de AUS_KIM** (ESP32-S3 SuperMini, 4 Sharp y motores anteriores). **NO usar este pinout en la nueva placa ESP32-C3.**
+>
+> Para AUS_KIM V2 consultar: **[conexiones y pinout completos ESP32-C3](AUS_KIM_V2_ESP32-C3.md)**.
+
+Este documento conserva el cableado real verificado de la V1 y las correcciones históricas aplicadas en la interfaz de diagnóstico.
 
 ## 1. ESP32-S3 SuperMini
 
