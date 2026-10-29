@@ -1,8 +1,51 @@
 # AUS_KIM
 
-Proyecto para programar desde cero el robot de laberinto prestado **AUS_KIM**, basado en ESP32-S3.
+Robot de laberinto **AUS_KIM** de RMP. El repositorio conserva el firmware probado de la **V1 (ESP32-S3)** y documenta la nueva **V2 (ESP32-C3 Super Mini)**.
 
-## Hardware actual
+## AUS_KIM V2 — placa nueva ESP32-C3 (en desarrollo)
+
+**Referencia completa:** [Hardware, pinout, alimentación, conectores y validaciones de AUS_KIM V2](docs/AUS_KIM_V2_ESP32-C3.md).
+
+La V2 incorpora:
+- **ESP32-C3 Super Mini** en lugar de ESP32-S3.
+- **3 sensores Sharp GP2Y0E03**: un frontal, uno lateral izquierdo y uno lateral derecho (se retira un Sharp frontal).
+- **1 sensor de piso QRE1113GR** en plaqueta externa de tres contactos para detectar la llegada.
+- **2 motores N20 de 1500 RPM con encoders de cuadratura completos** (dos canales A/B por motor).
+- **DRV8833** con jumper JP1 en EEP/nSLEEP para habilitar los motores después del arranque.
+- **Pulsador físico START** en GPIO9/BOOT, con pull-up; resistencias de 10 kΩ en GPIO2 y GPIO8.
+- **LiPo 2S + BEC 5 V** para electrónica y, según el esquema, el driver de motores; masa común.
+
+### Pinout V2 (ESP32-C3)
+
+| GPIO | V2: función |
+| ---: | --- |
+| 0 | Sharp lateral izquierdo (`SH_I`) |
+| 1 | Sharp frontal (`SH_F`) |
+| 2 | DRV8833 IN1 (`AIN1`; motor derecho) |
+| 3 | Sharp lateral derecho (`SH_D`) |
+| 4 | QRE1113GR de piso (`SENSOR`) |
+| 5 | Encoder izquierdo B (`ENC_IB`) |
+| 6 | Encoder izquierdo A (`ENC_IA`) |
+| 7 | Encoder derecho B (`ENC_DB`) |
+| 8 | DRV8833 IN2 (`AIN2`; motor derecho) |
+| 9 | START / BOOT (activo en LOW) |
+| 10 | Encoder derecho A (`ENC_DA`) |
+| 20 | DRV8833 IN3 (`BIN1`; motor izquierdo) |
+| 21 | DRV8833 IN4 (`BIN2`; motor izquierdo) |
+
+**Estado del software:** esta actualización es de documentación del hardware. El firmware existente **continúa siendo V1/ESP32-S3**: aún no está portado a ESP32-C3 ni tiene implementadas las nuevas estrategias BFS/mapeo, encoder y sensor de piso. **No cargar el firmware V1 en la nueva placa.**
+
+### Estrategias previstas para V2
+
+Primera pasada: explorar/mapear paredes y reconocer llegada mediante el QRE. Segunda pasada: elegir carrera con mapa y encoders o seguimiento de pared derecha. Estos modos quedan **pendientes de implementación y calibración**.
+
+---
+
+## AUS_KIM V1 — documentación y firmware histórico (ESP32-S3)
+
+**Conexiones originales V1:** [docs/conexiones.md](docs/conexiones.md). Los GPIO, umbrales, motores y modo de STOP descritos a continuación pertenecen **solo a V1**.
+
+## Hardware original de V1
 
 - ESP32-S3 SuperMini
 - 4x Sharp GP2Y0E03
