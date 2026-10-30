@@ -1,5 +1,7 @@
 # AUS_KIM
 
+> **Ficha técnica:** [AUS_KIM en RMP Robotics](https://srampello.github.io/RMP/robots/aus-kim/) · Todos los robots en [srampello.github.io/RMP](https://srampello.github.io/RMP/)
+
 Robot de laberinto **AUS_KIM** de RMP. El repositorio conserva el firmware probado de la **V1 (ESP32-S3)** y documenta la nueva **V2 (ESP32-C3 Super Mini)**.
 
 ## AUS_KIM V2 — placa nueva ESP32-C3 (en desarrollo)
