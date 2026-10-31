@@ -1,8 +1,7 @@
 // AUS_KIM V2 - Prueba minima de motores (ESP32-C3 Super Mini + DRV8833)
 //
-// Al pulsar START (GPIO9) los dos motores van ADELANTE, se detienen un instante y van ATRAS,
-// a velocidad 200 (de 255). Despues quedan detenidos hasta la proxima pulsacion.
-// Pulsar START durante la secuencia la detiene en el acto.
+// Al pulsar START (GPIO9) los dos motores van ADELANTE a velocidad 200 (de 255) y siguen
+// hasta que se vuelve a pulsar START, que los detiene. Cada pulsacion alterna: marcha / parada.
 //
 // No usa Wi-Fi, ni Serial, ni encoders, ni sensores. Serial se evita a proposito: GPIO20/21
 // (motor izquierdo) son tambien RX/TX de la UART0 y Serial.begin() los dejaria en alto.
@@ -15,14 +14,8 @@
 #include <Arduino.h>
 #include <esp_arduino_version.h>
 
-// El tipo va antes de la primera funcion: el IDE genera los prototipos ahi y necesita conocerlo.
-enum Fase { QUIETO, ADELANTE, PAUSA, ATRAS };
-
 // ------------------------------------------------------------ Ajustes
 const int  VELOCIDAD     = 200;    // 0..255
-const uint32_t T_ADELANTE_MS = 2000;
-const uint32_t T_PAUSA_MS    = 500;
-const uint32_t T_ATRAS_MS    = 2000;
 const bool INVERTIR_IZQ  = false;
 const bool INVERTIR_DER  = false;
 
@@ -77,19 +70,8 @@ bool startPulsado() {          // true una sola vez por pulsacion
   return false;
 }
 
-// ------------------------------------------------------------ Secuencia
-Fase fase = QUIETO;
-uint32_t tFase = 0;
-
-void irA(Fase f) {
-  fase = f;
-  tFase = millis();
-  switch (f) {
-    case ADELANTE: motores(VELOCIDAD, VELOCIDAD); break;
-    case ATRAS:    motores(-VELOCIDAD, -VELOCIDAD); break;
-    default:       parar(); break;
-  }
-}
+// ------------------------------------------------------------ Principal
+bool andando = false;
 
 void setup() {
   setupMotors();               // lo primero: motores detenidos
@@ -99,14 +81,9 @@ void setup() {
 }
 
 void loop() {
-  bool press = startPulsado();
-  uint32_t dt = millis() - tFase;
-
-  if (press) {
-    if (fase == QUIETO) irA(ADELANTE); else irA(QUIETO);
-    return;
+  if (startPulsado()) {
+    andando = !andando;
+    if (andando) motores(VELOCIDAD, VELOCIDAD);   // adelante hasta la proxima pulsacion
+    else parar();
   }
-  if (fase == ADELANTE && dt >= T_ADELANTE_MS) irA(PAUSA);
-  else if (fase == PAUSA && dt >= T_PAUSA_MS) irA(ATRAS);
-  else if (fase == ATRAS && dt >= T_ATRAS_MS) irA(QUIETO);
 }
