@@ -1,12 +1,15 @@
-// AUS_KIM V2 - Calibracion de encoders, avance y giros por Wi-Fi (ESP32-C3 Super Mini)
+// AUS_KIM V2 - Pruebas de motores y sensores por Wi-Fi (ESP32-C3 Super Mini)
 //
 // Red:   SSID AUS_KIM_V2   clave AUSKIM2026   panel http://192.168.4.1
 // Placa en Arduino IDE: "ESP32C3 Dev Module", "USB CDC On Boot: Enabled".
 // Compatible con arduino-esp32 core 2.x y 3.x. Archivos de la carpeta: este .ino (logica) y web_calib.h (pagina web).
 //
-// Para que sirve: medir cuantas cuentas de encoder son 1 mm de avance y cuantas hacen
+// Pestana MOTORES: medir cuantas cuentas de encoder son 1 mm de avance y cuantas hacen
 // falta para girar un angulo (con la separacion de ruedas), y probar avances y giros
-// controlados por encoders. Los valores calibrados se guardan en la memoria del robot.
+// controlados por encoders.
+// Pestana SENSORES: lecturas de los 3 Sharp y del QRE, umbral de pared por sensor, deteccion
+// de piso blanco/negro, estado del boton START y registro de lecturas por distancia.
+// Los valores calibrados se guardan en la memoria del robot.
 //
 // Seguridad (ver docs/AUS_KIM_V2_ESP32-C3.md):
 //   - Encender con JP1 retirado; colocar JP1 recien cuando el firmware ya arranco.
@@ -61,6 +64,8 @@ struct CalConfig {
   float kHead = 0.8f;        // correccion de recta/equilibrio (PWM por cuenta de diferencia)
   int invML = 0, invMR = 0;  // invertir sentido de motor izquierdo / derecho
   int invEL = 0, invER = 0;  // invertir signo del encoder izquierdo / derecho
+  int thrI = 1500, thrF = 1500, thrD = 1500;  // umbral ADC de pared por Sharp (SIN CALIBRAR)
+  int qreBlack = -1, qreWhite = -1;           // ADC del QRE sobre negro / blanco (-1 = sin capturar)
 } cfg;
 
 // ------------------------------------------------------ Tipos (antes de las funciones)
@@ -110,6 +115,11 @@ void loadConfig() {
   cfg.invMR    = prefs.getInt("invMR", cfg.invMR);
   cfg.invEL    = prefs.getInt("invEL", cfg.invEL);
   cfg.invER    = prefs.getInt("invER", cfg.invER);
+  cfg.thrI     = prefs.getInt("thrI", cfg.thrI);
+  cfg.thrF     = prefs.getInt("thrF", cfg.thrF);
+  cfg.thrD     = prefs.getInt("thrD", cfg.thrD);
+  cfg.qreBlack = prefs.getInt("qreBlack", cfg.qreBlack);
+  cfg.qreWhite = prefs.getInt("qreWhite", cfg.qreWhite);
 }
 
 void saveConfig() {
@@ -127,6 +137,11 @@ void saveConfig() {
   prefs.putInt("invMR", cfg.invMR);
   prefs.putInt("invEL", cfg.invEL);
   prefs.putInt("invER", cfg.invER);
+  prefs.putInt("thrI", cfg.thrI);
+  prefs.putInt("thrF", cfg.thrF);
+  prefs.putInt("thrD", cfg.thrD);
+  prefs.putInt("qreBlack", cfg.qreBlack);
+  prefs.putInt("qreWhite", cfg.qreWhite);
 }
 
 // ------------------------------------------------------------------ Encoders
@@ -213,6 +228,26 @@ uint16_t readMedian5(uint8_t pin) {
     v[j + 1] = k;
   }
   return v[2];
+}
+
+// Promedio de 16 lecturas (cada una ya es una mediana de 5): para capturar umbrales y valores del QRE.
+int avgRead(uint8_t pin) {
+  long a = 0;
+  for (int i = 0; i < 16; i++) a += readMedian5(pin);
+  return (int)(a / 16);
+}
+
+// Estado de pared con histeresis (~7 %): el Sharp da mas valor cuanto mas cerca esta la pared.
+bool wallI = false, wallF = false, wallD = false;
+bool wallState(bool prev, int v, int thr) {
+  int off = thr - thr / 15;
+  return prev ? (v >= off) : (v >= thr);
+}
+
+// Piso blanco: "true"; piso negro: "false"; sin los dos valores capturados: "null".
+const char *qreWhiteJson(int v) {
+  if (cfg.qreBlack < 0 || cfg.qreWhite < 0) return "null";
+  return abs(v - cfg.qreWhite) < abs(v - cfg.qreBlack) ? "true" : "false";
 }
 
 bool startPressedStable() {
@@ -370,6 +405,11 @@ String cfgJson() {
   s += ",\"invMR\":" + String(cfg.invMR);
   s += ",\"invEL\":" + String(cfg.invEL);
   s += ",\"invER\":" + String(cfg.invER);
+  s += ",\"thrI\":" + String(cfg.thrI);
+  s += ",\"thrF\":" + String(cfg.thrF);
+  s += ",\"thrD\":" + String(cfg.thrD);
+  s += ",\"qreBlack\":" + String(cfg.qreBlack);
+  s += ",\"qreWhite\":" + String(cfg.qreWhite);
   s += "}";
   return s;
 }
@@ -378,16 +418,27 @@ String cfgJson() {
 float speedL = 0, speedR = 0;
 
 void handleStatus() {
+  int vI = readMedian5(PIN_SH_I), vF = readMedian5(PIN_SH_F);
+  int vD = readMedian5(PIN_SH_D), vQ = readMedian5(PIN_QRE);
+  wallI = wallState(wallI, vI, cfg.thrI);
+  wallF = wallState(wallF, vF, cfg.thrF);
+  wallD = wallState(wallD, vD, cfg.thrD);
+
   String s = "{";
   s += "\"mode\":\"" + String(modeName()) + "\"";
   s += ",\"cL\":" + String(countL());
   s += ",\"cR\":" + String(countR());
   s += ",\"vL\":" + f(speedL, 0);
   s += ",\"vR\":" + f(speedR, 0);
-  s += ",\"shI\":" + String(readMedian5(PIN_SH_I));
-  s += ",\"shF\":" + String(readMedian5(PIN_SH_F));
-  s += ",\"shD\":" + String(readMedian5(PIN_SH_D));
-  s += ",\"qre\":" + String(readMedian5(PIN_QRE));
+  s += ",\"shI\":" + String(vI);
+  s += ",\"shF\":" + String(vF);
+  s += ",\"shD\":" + String(vD);
+  s += ",\"qre\":" + String(vQ);
+  s += ",\"wI\":" + String(wallI ? "true" : "false");
+  s += ",\"wF\":" + String(wallF ? "true" : "false");
+  s += ",\"wD\":" + String(wallD ? "true" : "false");
+  s += ",\"qreWhite\":" + String(qreWhiteJson(vQ));
+  s += ",\"start\":" + String(digitalRead(PIN_START) == LOW ? "true" : "false");
   s += ",\"cfg\":" + cfgJson();
   s += ",\"last\":{";
   s += "\"valid\":" + String(last.valid ? "true" : "false");
@@ -509,6 +560,40 @@ void handleConfig() {
   sendOk("Guardado");
 }
 
+// Umbral de pared de un Sharp: valor escrito (v=) o el valor actual promediado (cur=1).
+void handleThr() {
+  String s = server.arg("s");
+  if (s != "I" && s != "F" && s != "D") { sendErr("Sensor invalido (I, F o D)"); return; }
+  int v;
+  if (server.hasArg("cur")) v = avgRead(s == "I" ? PIN_SH_I : (s == "F" ? PIN_SH_F : PIN_SH_D));
+  else if (server.hasArg("v")) v = server.arg("v").toInt();
+  else { sendErr("Falta v o cur"); return; }
+  if (v < 1 || v > 4095) { sendErr("Valor fuera de rango (1 a 4095)"); return; }
+  if (s == "I") cfg.thrI = v; else if (s == "F") cfg.thrF = v; else cfg.thrD = v;
+  saveConfig();
+  sendOk("Umbral " + s + " = " + String(v));
+}
+
+// Captura del QRE sobre piso negro o blanco (c=black / c=white); c=clear borra los dos.
+void handleCalQre() {
+  String c = server.arg("c");
+  if (c == "clear") {
+    cfg.qreBlack = -1;
+    cfg.qreWhite = -1;
+    saveConfig();
+    sendOk("Valores del QRE borrados");
+    return;
+  }
+  if (c != "black" && c != "white") { sendErr("Usar c=black, c=white o c=clear"); return; }
+  int v = avgRead(PIN_QRE);
+  if (c == "black") cfg.qreBlack = v; else cfg.qreWhite = v;
+  saveConfig();
+  String m = "QRE " + String(c == "black" ? "negro" : "blanco") + " = " + String(v);
+  if (cfg.qreBlack >= 0 && cfg.qreWhite >= 0 && abs(cfg.qreBlack - cfg.qreWhite) < 150)
+    m += " (negro y blanco muy parecidos: revisar la altura del sensor)";
+  sendOk(m);
+}
+
 // ------------------------------------------------------------------- Setup
 void setup() {
   // Lo primero: pines del driver en estado seguro.
@@ -544,9 +629,11 @@ void setup() {
   server.on("/api/adjust_move", HTTP_GET, handleAdjustMove);
   server.on("/api/adjust_turn", HTTP_GET, handleAdjustTurn);
   server.on("/api/config", HTTP_GET, handleConfig);
+  server.on("/api/thr", HTTP_GET, handleThr);
+  server.on("/api/cal_qre", HTTP_GET, handleCalQre);
   server.begin();
 
-  Serial.println(F("AUS_KIM V2 calibracion lista"));
+  Serial.println(F("AUS_KIM V2 pruebas de motores y sensores listas"));
   Serial.print(F("Wi-Fi: "));
   Serial.print(WIFI_SSID);
   Serial.print(F("  panel: http://"));

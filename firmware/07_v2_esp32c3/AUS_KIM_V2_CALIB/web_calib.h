@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-// Pagina web de calibracion AUS_KIM V2 (HTML + CSS + JavaScript).
+// Pagina web de pruebas AUS_KIM V2 (HTML + CSS + JavaScript): pestanas Motores y Sensores.
 // Se guarda en memoria de programa (PROGMEM): no usa Internet ni LittleFS.
 // Se puede editar este archivo sin tocar la logica del robot.
 
@@ -11,7 +11,7 @@ const char INDEX_HTML[] PROGMEM = R"HTML(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0">
-<title>AUS_KIM V2 | Calibracion</title>
+<title>AUS_KIM V2 | Pruebas</title>
 <style>
 :root{--bg:#07070a;--panel:#111117;--panel2:#17171f;--border:#2a2a36;--text:#f4f4f8;--muted:#9a9aab;
 --violet:#8b5cf6;--violet2:#6d28d9;--good:#22c55e;--bad:#ef4444;--warn:#f59e0b}
@@ -42,13 +42,38 @@ button.small{padding:7px 10px;font-weight:600}
 #stop{position:fixed;left:0;right:0;bottom:0;padding:12px 16px;background:linear-gradient(180deg,transparent,#000 40%)}
 #stop button{width:100%;max-width:728px;display:block;margin:auto;padding:16px;font-size:17px;background:var(--bad);border-color:#f87171;color:#fff;letter-spacing:.08em}
 .chk{display:flex;gap:6px;align-items:center;font-size:12.5px;color:var(--text)}
+.tabs{display:flex;gap:8px;margin:10px 0 14px}
+.tabs button{flex:1;padding:13px;font-size:14px}
+.tabs button.active{background:linear-gradient(180deg,var(--violet),var(--violet2));border-color:#9f7aea}
+.panel{display:none}
+.panel.active{display:block}
+.bar{position:relative;height:14px;background:#0c0c11;border:1px solid var(--border);border-radius:8px;overflow:hidden;margin:8px 0}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--violet2),var(--violet))}
+.bar u{position:absolute;top:0;bottom:0;width:2px;background:var(--warn)}
+.badge{display:inline-block;padding:3px 9px;border-radius:999px;font-size:11.5px;font-weight:800;letter-spacing:.06em;margin-left:6px}
+.badge.on{background:rgba(239,68,68,.18);color:#fca5a5;border:1px solid var(--bad)}
+.badge.off{background:rgba(34,197,94,.15);color:#86efac;border:1px solid var(--good)}
+.badge.na{background:#1b1b24;color:var(--muted);border:1px solid var(--border)}
+.cross{display:grid;grid-template-columns:76px 96px 76px;grid-template-rows:46px 72px;gap:6px;justify-content:center;margin:10px 0}
+.cross div{display:flex;align-items:center;justify-content:center;border-radius:10px;font-weight:800;font-size:13px;background:#0c0c11;border:1px solid var(--border);color:var(--muted)}
+.cross .w{background:rgba(239,68,68,.25);border-color:var(--bad);color:#fff}
+.cross .rb{background:linear-gradient(180deg,var(--violet),var(--violet2));color:#fff;border-color:#9f7aea}
+.big{font-size:30px;font-weight:800;font-variant-numeric:tabular-nums}
+textarea{width:100%;height:120px;background:#0c0c11;color:var(--text);border:1px solid var(--border);border-radius:10px;padding:8px;font:12px ui-monospace,Menlo,Consolas,monospace}
 </style>
 </head>
 <body>
 <div class="wrap">
 <h1>AUS_KIM V2</h1>
-<div class="sub">Calibracion de encoders, avance y giros &middot; <span id="conn" class="warn">conectando...</span></div>
+<div class="sub">Pruebas de motores y sensores &middot; <span id="conn" class="warn">conectando...</span></div>
+<div class="tabs">
+<button id="tbMot" class="active" onclick="showTab('mot')">Motores</button>
+<button id="tbSen" onclick="showTab('sen')">Sensores</button>
+</div>
 <div id="msg"></div>
+
+<!-- ============================ PESTANA MOTORES ============================ -->
+<div id="tabMot" class="panel active">
 
 <div class="card">
 <h2>Estado en vivo</h2>
@@ -57,10 +82,6 @@ button.small{padding:7px 10px;font-weight:600}
 <div class="kv"><small>Encoder der</small><b id="cR">-</b></div>
 <div class="kv"><small>Vel izq (c/s)</small><b id="vL">-</b></div>
 <div class="kv"><small>Vel der (c/s)</small><b id="vR">-</b></div>
-<div class="kv"><small>Sharp izq</small><b id="shI">-</b></div>
-<div class="kv"><small>Sharp frente</small><b id="shF">-</b></div>
-<div class="kv"><small>Sharp der</small><b id="shD">-</b></div>
-<div class="kv"><small>QRE piso</small><b id="qre">-</b></div>
 <div class="kv"><small>Estado</small><b id="mode">-</b></div>
 <div class="kv"><small>Cuentas / mm</small><b id="cpm">-</b></div>
 <div class="kv"><small>Separacion ruedas</small><b id="trk">-</b></div>
@@ -92,12 +113,15 @@ button.small{padding:7px 10px;font-weight:600}
 
 <div class="card">
 <h2>Paso 3 &middot; Probar avance</h2>
-<p>El robot avanza la distancia pedida usando los encoders. Luego <b>mide con regla lo que realmente avanzo</b>, escribelo abajo y ajusta. Repite hasta que coincida. La celda del reglamento es de 250 mm.</p>
+<p>El robot avanza la distancia pedida usando los encoders. Luego <b>mide con regla lo que realmente avanzo</b>, escribelo abajo y ajusta. Repite hasta que coincida. La celda mide 250 mm o 180 mm, segun la sede.</p>
 <div class="row"><label>Distancia (mm)</label><input type="number" id="mvMm" value="250">
 <button class="main" onclick="act('/api/move?mm='+$('mvMm').value)">Avanzar</button>
-<button class="small" onclick="act('/api/move?mm=-'+Math.abs($('mvMm').value))">Retroceder</button>
-<button class="small" onclick="$('mvMm').value=250">1 celda</button>
-<button class="small" onclick="$('mvMm').value=125">media celda</button></div>
+<button class="small" onclick="act('/api/move?mm=-'+Math.abs($('mvMm').value))">Retroceder</button></div>
+<div class="row">
+<button class="small" onclick="$('mvMm').value=250">1 celda (250)</button>
+<button class="small" onclick="$('mvMm').value=125">media (125)</button>
+<button class="small" onclick="$('mvMm').value=180">1 celda (180)</button>
+<button class="small" onclick="$('mvMm').value=90">media (90)</button></div>
 <div class="row"><label>Avance real medido (mm)</label><input type="number" id="adjMm" step="0.5"><button onclick="act('/api/adjust_move?real='+$('adjMm').value)">Ajustar cuentas/mm</button></div>
 </div>
 
@@ -125,19 +149,71 @@ button.small{padding:7px 10px;font-weight:600}
 <div class="row"><label>Correccion recta</label><input type="number" id="kHead" step="0.05"><button class="main" onclick="saveCfg()">Guardar</button></div>
 </div>
 
-<p class="sub">Seguridad: el boton START del robot tambien detiene un movimiento. Los movimientos tienen limite de tiempo. No presiones START al encender.</p>
+</div>
+
+<!-- ============================ PESTANA SENSORES ============================ -->
+<div id="tabSen" class="panel">
+
+<div class="card">
+<h2>Como ve el robot las paredes</h2>
+<p>Pared = lectura del Sharp mayor o igual al umbral (el Sharp da un valor <b>mas alto cuanto mas cerca</b> esta la pared). Con el robot en el centro de una celda, esto es lo que decide la mano derecha.</p>
+<div class="cross">
+<span></span><div id="xF">F</div><span></span>
+<div id="xI">I</div><div class="rb">ROBOT</div><div id="xD">D</div>
+</div>
+<div class="res" id="decision">-</div>
+</div>
+
+<div id="senCards"></div>
+
+<div class="card">
+<h2>Sensor de piso QRE <span id="sQ" class="badge na">-</span></h2>
+<div class="row"><span class="big" id="vQ">-</span><small style="color:var(--muted)">ADC (0-4095)</small></div>
+<p>Apoya el sensor sobre el piso <b>negro</b> y toca "Capturar negro". Despues sobre el <b>blanco</b> (celda de llegada) y toca "Capturar blanco". Con los dos valores decide solo si ve blanco o negro. Si quedan muy parecidos, acerca o aleja el sensor del piso.</p>
+<div class="row"><button class="main" onclick="act('/api/cal_qre?c=black').then(()=>firstSen=true)">Capturar negro</button>
+<button class="main" onclick="act('/api/cal_qre?c=white').then(()=>firstSen=true)">Capturar blanco</button>
+<button class="small" onclick="act('/api/cal_qre?c=clear')">Borrar</button></div>
+<div class="res" id="qreInfo">-</div>
+</div>
+
+<div class="card">
+<h2>Boton START (GPIO9)</h2>
+<div class="row"><span class="big" id="vS">-</span><small style="color:var(--muted)">presionalo para probarlo (no lo mantengas al encender)</small></div>
+</div>
+
+<div class="card">
+<h2>Registro de lecturas por distancia</h2>
+<p>Pone una pared frente a los sensores a una distancia conocida (por ejemplo 40, 60, 80, 100, 150, 200 mm), escribila y toca "Anotar". Despues copia la tabla: sirve para pasar de valor ADC a milimetros. Este registro queda solo en la pagina; si la recargas se borra.</p>
+<div class="row"><label>Distancia (mm)</label><input type="number" id="lgMm" value="60"><button class="main" onclick="addRow()">Anotar lectura</button>
+<button onclick="copyLog()">Copiar</button><button class="small" onclick="clearLog()">Borrar</button></div>
+<textarea id="lgTxt" readonly></textarea>
+</div>
+
+</div>
+
+<p class="sub">Seguridad: el boton START del robot tambien detiene un movimiento. Los movimientos tienen limite de tiempo. No presiones START al encender. Al cambiar de pestana el robot se detiene.</p>
 </div>
 <div id="stop"><button onclick="act('/api/stop')">STOP</button></div>
 
 <script>
 const $=id=>document.getElementById(id);
-let first=true,S=null;
+let first=true,firstSen=true,S=null,tab='mot';
 async function api(p){
   try{const r=await fetch(p,{cache:'no-store'});const t=await r.text();let j;try{j=JSON.parse(t)}catch(e){j={error:t}}return j}
   catch(e){return{error:'sin conexion con el robot'}}
 }
 function msg(t,bad){const m=$('msg');m.textContent=t;m.className=bad?'bad':'ok'}
 async function act(p){const j=await api(p);if(j.error)msg(j.error,1);else msg(j.ok||'OK');poll();return j}
+function showTab(t){
+  if(t!==tab)api('/api/stop');
+  tab=t;
+  $('tabMot').className='panel'+(t==='mot'?' active':'');
+  $('tabSen').className='panel'+(t==='sen'?' active':'');
+  $('tbMot').className=t==='mot'?'active':'';
+  $('tbSen').className=t==='sen'?'active':'';
+}
+
+/* ---------- Motores ---------- */
 function mt(side,sign){act('/api/motor?m='+side+'&pwm='+sign*Math.abs($('tpwm').value))}
 function inv(){
   act('/api/config?invML='+($('invML').checked?1:0)+'&invMR='+($('invMR').checked?1:0)+'&invEL='+($('invEL').checked?1:0)+'&invER='+($('invER').checked?1:0));
@@ -150,17 +226,15 @@ function fill(c){
   ['minPwm','maxPwm','decelMm','rampStep','tolMm','tolDeg','kHead'].forEach(k=>$(k).value=c[k]);
   ['invML','invMR','invEL','invER'].forEach(k=>$(k).checked=!!c[k]);
 }
-function render(s){
-  $('conn').textContent='conectado';$('conn').className='';
+function renderMot(s){
   $('cL').textContent=s.cL;$('cR').textContent=s.cR;
   $('vL').textContent=Math.round(s.vL);$('vR').textContent=Math.round(s.vR);
-  $('shI').textContent=s.shI;$('shF').textContent=s.shF;$('shD').textContent=s.shD;$('qre').textContent=s.qre;
   $('mode').textContent=s.mode;
   const c=s.cfg;
   $('cpm').textContent=c.cpm>0?c.cpm.toFixed(3):'sin calibrar';
   $('trk').textContent=c.trackMm.toFixed(1)+' mm';
   let w='';
-  if(c.cpm>0){w+='1 mm = '+c.cpm.toFixed(3)+' cuentas &middot; 250 mm (1 celda) = '+Math.round(c.cpm*250)+' cuentas';
+  if(c.cpm>0){w+='1 mm = '+c.cpm.toFixed(3)+' cuentas &middot; 250 mm = '+Math.round(c.cpm*250)+' cuentas &middot; 180 mm = '+Math.round(c.cpm*180)+' cuentas';
     if(c.wheelDia>0)w+='<br>Cuentas por vuelta de rueda: '+(c.cpm*Math.PI*c.wheelDia).toFixed(0)}
   else w='<span class="warn">Falta calibrar. Usa el paso 2.</span>';
   $('wheelInfo').innerHTML=w;
@@ -176,12 +250,67 @@ function render(s){
   }
   if(first){fill(c);first=false}
 }
+
+/* ---------- Sensores ---------- */
+const SEN=[['I','Izquierda'],['F','Frente'],['D','Derecha']];
+$('senCards').innerHTML=SEN.map(function(a){var k=a[0],n=a[1];return ''+
+ '<div class="card"><h2>Sharp '+n+' <span id="s'+k+'" class="badge na">-</span></h2>'+
+ '<div class="row"><span class="big" id="v'+k+'">-</span><small style="color:var(--muted)">ADC (0-4095)</small></div>'+
+ '<div class="bar"><i id="b'+k+'" style="width:0"></i><u id="m'+k+'" style="left:0"></u></div>'+
+ '<div class="row"><label>Umbral de pared (ADC &ge;)</label><input type="number" id="t'+k+'" min="1" max="4095">'+
+ '<button onclick="setThr(\''+k+'\')">Guardar</button>'+
+ '<button class="main" onclick="useCur(\''+k+'\')">Usar valor actual</button></div></div>';}).join('');
+function setThr(k){act('/api/thr?s='+k+'&v='+$('t'+k).value).then(function(){firstSen=true})}
+function useCur(k){act('/api/thr?s='+k+'&cur=1').then(function(){firstSen=true})}
+function badge(el,txt,cls){el.textContent=txt;el.className='badge '+cls}
+function renderSen(s){
+  const c=s.cfg;
+  const W={I:s.wI,F:s.wF,D:s.wD},V={I:s.shI,F:s.shF,D:s.shD},T={I:c.thrI,F:c.thrF,D:c.thrD};
+  SEN.forEach(function(a){
+    const k=a[0];
+    $('v'+k).textContent=V[k];
+    $('b'+k).style.width=Math.min(100,V[k]/40.95)+'%';
+    $('m'+k).style.left=Math.min(100,T[k]/40.95)+'%';
+    badge($('s'+k),W[k]?'PARED':'LIBRE',W[k]?'on':'off');
+    $('x'+k).className=W[k]?'w':'';
+  });
+  $('decision').innerHTML='I F D = <b>'+(W.I?1:0)+' '+(W.F?1:0)+' '+(W.D?1:0)+'</b> &middot; '+
+    (!W.D?'derecha libre: giraria a la derecha':(!W.F?'sigue recto':(!W.I?'gira a la izquierda':'callejon: media vuelta')));
+  $('vQ').textContent=s.qre;
+  if(s.qreWhite===null)badge($('sQ'),'SIN CALIBRAR','na');
+  else badge($('sQ'),s.qreWhite?'BLANCO':'NEGRO',s.qreWhite?'off':'on');
+  $('qreInfo').innerHTML='Negro capturado: '+(c.qreBlack>=0?c.qreBlack:'-')+' &middot; Blanco capturado: '+(c.qreWhite>=0?c.qreWhite:'-');
+  $('vS').textContent=s.start?'PRESIONADO':'libre';
+  if(firstSen){SEN.forEach(function(a){$('t'+a[0]).value=T[a[0]]});firstSen=false}
+}
+/* registro de lecturas */
+let LOG=[];
+function logText(){
+  return 'dist_mm\tSharp_I\tSharp_F\tSharp_D\tQRE\n'+LOG.map(function(r){return r.join('\t')}).join('\n');
+}
+function addRow(){
+  if(!S){msg('Sin lecturas todavia',1);return}
+  LOG.push([$('lgMm').value,S.shI,S.shF,S.shD,S.qre]);
+  $('lgTxt').value=logText();
+}
+function clearLog(){LOG=[];$('lgTxt').value=''}
+function copyLog(){
+  const t=$('lgTxt');t.value=logText();t.focus();t.select();
+  let ok=false;try{ok=document.execCommand('copy')}catch(e){}
+  msg(ok?'Tabla copiada':'Seleccionada: mantene presionado y copia',!ok);
+}
+
+/* ---------- comun ---------- */
+function render(s){
+  $('conn').textContent='conectado';$('conn').className='';
+  renderMot(s);renderSen(s);
+}
 async function poll(){
   const s=await api('/api/status');
   if(s.error){$('conn').textContent='sin conexion';$('conn').className='warn';return}
   S=s;render(s);
 }
-setInterval(poll,300);poll();
+setInterval(poll,250);poll();
 </script>
 </body>
 </html>
