@@ -1,7 +1,8 @@
 // AUS_KIM V2 - Pruebas de motores y sensores por Wi-Fi (ESP32-C3 Super Mini)
 //
 // Red:   SSID AUS_KIM_V2   clave AUSKIM2026   panel http://192.168.4.1
-// Placa en Arduino IDE: "ESP32C3 Dev Module", "USB CDC On Boot: Enabled".
+// Placa en Arduino IDE: "ESP32C3 Dev Module", "USB CDC On Boot: Enabled" (recomendado; con Disabled
+// el firmware no usa Serial, porque la UART0 comparte GPIO20/21 con el motor izquierdo).
 // Compatible con arduino-esp32 core 2.x y 3.x. Archivos de la carpeta: este .ino (logica) y web_calib.h (pagina web).
 //
 // Pestana MOTORES: medir cuantas cuentas de encoder son 1 mm de avance y cuantas hacen
@@ -25,6 +26,19 @@
 #include <Preferences.h>
 #include "driver/gpio.h"
 #include "web_calib.h"   // pagina web (misma carpeta)
+
+// GPIO20 y GPIO21 (motor izquierdo, IN3/IN4) son tambien RX/TX de la UART0. Si "USB CDC On Boot"
+// esta en Disabled, Serial usa la UART0 y deja GPIO21 (TX) en alto: el motor izquierdo queda
+// siempre a maxima velocidad. Por eso solo se usa Serial cuando es USB (CDC) y no toca esos pines.
+#if defined(ARDUINO_USB_CDC_ON_BOOT) && ARDUINO_USB_CDC_ON_BOOT
+#define DBG_BEGIN(b) Serial.begin(b)
+#define DBG(x) Serial.print(x)
+#define DBGLN(x) Serial.println(x)
+#else
+#define DBG_BEGIN(b)
+#define DBG(x)
+#define DBGLN(x)
+#endif
 
 
 // ---------------------------------------------------------------- Pines V2
@@ -600,7 +614,7 @@ void setup() {
   setupMotors();
   coastMotors();
 
-  Serial.begin(115200);
+  DBG_BEGIN(115200);
   pinMode(PIN_START, INPUT_PULLUP);
   analogReadResolution(12);
   analogSetPinAttenuation(PIN_SH_I, ADC_11db);
@@ -633,11 +647,11 @@ void setup() {
   server.on("/api/cal_qre", HTTP_GET, handleCalQre);
   server.begin();
 
-  Serial.println(F("AUS_KIM V2 pruebas de motores y sensores listas"));
-  Serial.print(F("Wi-Fi: "));
-  Serial.print(WIFI_SSID);
-  Serial.print(F("  panel: http://"));
-  Serial.println(WiFi.softAPIP());
+  DBGLN(F("AUS_KIM V2 pruebas de motores y sensores listas"));
+  DBG(F("Wi-Fi: "));
+  DBG(WIFI_SSID);
+  DBG(F("  panel: http://"));
+  DBGLN(WiFi.softAPIP());
 }
 
 void loop() {
