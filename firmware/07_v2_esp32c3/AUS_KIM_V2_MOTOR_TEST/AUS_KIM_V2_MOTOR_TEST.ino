@@ -15,6 +15,9 @@
 #include <Arduino.h>
 #include <esp_arduino_version.h>
 
+// El tipo va antes de la primera funcion: el IDE genera los prototipos ahi y necesita conocerlo.
+enum Fase { QUIETO, ADELANTE, PAUSA, ATRAS };
+
 // ------------------------------------------------------------ Ajustes
 const int  VELOCIDAD     = 200;    // 0..255
 const uint32_t T_ADELANTE_MS = 2000;
@@ -75,7 +78,6 @@ bool startPulsado() {          // true una sola vez por pulsacion
 }
 
 // ------------------------------------------------------------ Secuencia
-enum Fase { QUIETO, ADELANTE, PAUSA, ATRAS };
 Fase fase = QUIETO;
 uint32_t tFase = 0;
 
