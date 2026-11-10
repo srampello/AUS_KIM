@@ -51,16 +51,16 @@ El S3-Zero saca a sus bordes los **GPIO 1 a 13, TX (GPIO43) y RX (GPIO44)**, má
 | 13 | `BIN1` | TB6612 BIN1, motor izquierdo | Salida PWM |
 | 44 (RX) | `BIN2` | TB6612 BIN2, motor izquierdo | Salida PWM |
 | 43 (TX) | `STBY` | TB6612 STBY | Salida (habilita el driver) |
-| 3 | `START` | Pulsador de largada | Entrada, activa en LOW |
+| 3 | `VBAT_SENSE` | Divisor de la batería (100 kΩ / 47 kΩ) | ADC1 |
 | 14 (pad suelto) | `PWMA` | TB6612 PWMA, motor derecho | Salida PWM (cable al pad) |
 | 15 (pad suelto) | `PWMB` | TB6612 PWMB, motor izquierdo | Salida PWM (cable al pad) |
-| 16 (pad suelto) | `VBAT_SENSE` | Divisor de la batería | ADC2 (ver §5.1) |
+| 16 (pad suelto) | `START` | Pulsador de largada | Entrada, activa en LOW (cable al pad) |
 
 Criterios:
 - **Todas las lecturas analógicas van en ADC1 (GPIO1–10).** El ADC2 (GPIO11–20) comparte recursos con el Wi-Fi y puede fallar mientras está activo, y el panel de calibración usa Wi-Fi. [verificar con el core que uses]
-- **No quedan pines libres en el borde.** Los pads sueltos 14, 15 y 16 (cara superior del S3-Zero, se sueldan con cable) llevan `PWMA`, `PWMB` y `VBAT_SENSE`. Quedan los pads 17 y 18 (cara inferior) para ampliar, por ejemplo un giróscopo.
-- **Los GPIO14–16 son ADC2.** Como salidas PWM no hay problema; `VBAT_SENSE` solo se puede leer con el Wi-Fi apagado (en la carrera). [verificar]
-- **GPIO3 es pin de arranque (strapping).** Se usa para START con pull-up a 3,3 V; según la hoja de datos del S3 solo condiciona el origen del JTAG y en la configuración por defecto no tiene efecto. [verificar]
+- **No quedan pines libres en el borde.** Los pads sueltos 14, 15 y 16 (cara superior del S3-Zero, se sueldan con cable) llevan `PWMA`, `PWMB` y `START`. Quedan los pads 17 y 18 (cara inferior) para ampliar, por ejemplo un giróscopo.
+- **Los GPIO14–16 son ADC2, pero solo se usan como salidas PWM y como entrada digital.** La batería va en GPIO3 (ADC1), así que se puede leer con el Wi-Fi encendido.
+- **GPIO3 es pin de arranque (strapping).** Lleva el punto medio del divisor de batería (hasta ~2,7 V); según la hoja de datos del S3 solo condiciona el origen del JTAG y en la configuración por defecto no tiene efecto. [verificar]
 - **GPIO43/44 son la UART0.** Se usan como salidas normales, por eso en el firmware **no hay que usar `Serial0`/UART0**. Con "USB CDC On Boot: Enabled" `Serial` va por el USB y no los toca. Es la misma trampa que dejó el motor izquierdo a fondo en la V2.
 - Durante el arranque la ROM puede escribir texto por GPIO43. Como `STBY` tiene pull-down y las entradas IN del driver tienen pull-down interno, los motores quedan sin energía igual. [verificar en el robot real]
 - Los 4 Sharp mantienen la convención de la V1: dos laterales y dos frontales. Con dos frontales se puede **alinear el robot contra la pared de enfrente** comparando ambas lecturas.
@@ -162,7 +162,7 @@ Datos de la [hoja de datos](https://faculty-web.msoe.edu/johnsontimoj/Common/FIL
 - Condensadores del driver (§5): 10 µF + 100 nF en VM y en Vcc pegados al chip, más 100 µF en VBAT.
 - Alimentación del driver directa de VBAT, **separada de los 5 V de los sensores**, con retorno de GND corto y ancho (plano de GND, sin pasar por debajo del S3-Zero).
 - Cables de encoder cortos y lejos de los cables de motor. Opcional: 100 pF entre cada línea de encoder y GND, y la huella de pull-up de 10 kΩ.
-- **Medir la batería:** divisor de **100 kΩ / 47 kΩ** (de VBAT a GND, punto medio al GPIO16) con 100 nF a GND. A 8,4 V da unos 2,7 V, dentro del rango del ADC con 11 dB. Sirve para compensar la caída de la batería.
+- **Medir la batería:** divisor de **100 kΩ / 47 kΩ** (de VBAT a GND, punto medio al GPIO3) con 100 nF a GND. A 8,4 V da unos 2,7 V, dentro del rango del ADC con 11 dB. Sirve para compensar la caída de la batería.
 
 **Firmware**
 - PWM a **~31 kHz**, el mismo que usan los seguidores con TB6612FNG (Zafirah, Holdmoss, Yager); el TB6612 admite hasta 100 kHz. Resolución de 8 a 10 bits.
@@ -252,7 +252,7 @@ Conector de 6 pines por motor, en el mismo orden eléctrico que la V2:
 
 ## 9. Pulsador START
 
-- SW1 normalmente abierto entre `START` (GPIO3) y GND.
+- SW1 normalmente abierto entre `START` (GPIO16, pad suelto con un cable) y GND.
 - R de 10 kΩ de `START` a +3,3 V y 100 nF a GND (antirrebote por hardware, además del software).
 - El S3-Zero ya tiene su propio botón BOOT en GPIO0 pero **no está accesible** una vez montado en el robot, por eso START es un pulsador aparte.
 - El reglamento exige un pulsador visible y accesible para iniciar y detener el robot.
@@ -267,7 +267,9 @@ GND común: batería, regulador, S3-Zero, TB6612FNG (GND y PGND), Sharp, encoder
 - Pistas de potencia (VBAT, VM, salidas de motores) anchas, por ejemplo 0,8–1 mm.
 - Buck y TB6612 lejos de las entradas analógicas de los Sharp.
 
-## 12. Impacto en el firmware (`AUS_KIM_V2_CALIB`)
+## 12. Firmware (`firmware/08_v3_esp32s3/AUS_KIM_V3_CALIB`)
+
+Ya está portado con estos pines: pestañas Motores y Sensores, 4 Sharp, TB6612FNG con PWM en PWMA/PWMB a 31,25 kHz, STBY, lectura y compensación de batería. **Verificado solo en la PC** (compilación simulada, motores virtuales y la página en un navegador de prueba); falta compilarlo con el core real del ESP32-S3 y probarlo en la placa. Lo que cambia respecto de `AUS_KIM_V2_CALIB`:
 - Placa: **ESP32S3 Dev Module**, "USB CDC On Boot: Enabled".
 - Cambiar la tabla de pines a la de §3 y agregar el cuarto Sharp (`SH_FI`/`SH_FD`) y la salida `STBY`. Pared de enfrente = las dos lecturas frontales por encima del umbral.
 - Habilitar `STBY` después de iniciar los motores en estado seguro y apagarlo al detener.
