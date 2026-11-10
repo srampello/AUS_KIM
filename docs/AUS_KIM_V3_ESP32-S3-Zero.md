@@ -165,7 +165,8 @@ Datos de la [hoja de datos](https://faculty-web.msoe.edu/johnsontimoj/Common/FIL
 - **Medir la batería:** divisor de **100 kΩ / 47 kΩ** (de VBAT a GND, punto medio al GPIO16) con 100 nF a GND. A 8,4 V da unos 2,7 V, dentro del rango del ADC con 11 dB. Sirve para compensar la caída de la batería.
 
 **Firmware**
-- PWM a **20 kHz** (fuera de lo audible; el TB6612 admite hasta 100 kHz). Resolución de 10 bits.
+- PWM a **~31 kHz**, el mismo que usan los seguidores con TB6612FNG (Zafirah, Holdmoss, Yager); el TB6612 admite hasta 100 kHz. Resolución de 8 a 10 bits.
+- Misma convención de pines que los seguidores: A = motor derecho, B = motor izquierdo, `STBY` siempre en alto cuando andan. Si una rueda gira al revés se corrige con una bandera de inversión en el firmware.
 - **Control de velocidad en lazo cerrado** con los encoders: PID de velocidad por rueda a 1 kHz, con avance directo (feedforward) más corrección, y anti-windup.
 - **Compensación por tensión de batería:** el duty = (velocidad pedida) × (6 V / VBAT). Así un robot con batería llena y uno con batería gastada se comportan igual, y con 8,4 V no se superan los 6 V de los motores. Reemplaza el tope fijo de 180.
 - **Rampas** de aceleración y frenado, y una zona muerta mínima (PWM por debajo del cual el motor no gira).
