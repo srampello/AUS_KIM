@@ -14,14 +14,14 @@
 | Piso | **1 × QRE1113GR** (plaqueta externa, como en V2) | Conector de 3 pines |
 | Motores | **2 × N20 1500 rpm con encoder** | Conectores de 6 pines |
 | Batería | LiPo **2S 7,4 V** (6,0–8,4 V) | Conector de batería |
-| Alimentación | **Buck de 5 V soldado a la placa** (AP63205, ver §4) | **Sí** |
+| Alimentación | **Regulador de 5 V con huella TO-220** (7805 o equivalente conmutado, ver §4.2) | **Sí** |
 
 ## 2. Esquema por bloques
 
 ```
  Batería 2S ─► [conector] ─► [interruptor] ─► [protección polaridad] ─► VBAT ─┬──────────────► VM del TB6612FNG
                                                                               │
-                                                                              └─► [buck AP63205] ─► +5V ─┬─► VDD de los 4 Sharp
+                                                                              └─► [regulador 5 V] ─► +5V ─┬─► VDD de los 4 Sharp
                                                                                                         └─► [diodo Schottky] ─► pin 5V del S3-Zero
                                                                                                                                   │
                                                                          pin 3V3 del S3-Zero (LDO de la placa) ◄──────────────────┘
@@ -70,7 +70,24 @@ Criterios:
 4. **Fusible reseteable de 2 A** en serie (opcional pero recomendable). [verificar corriente de bloqueo de los N20]
 5. **Capacitor de 100 µF, 16 V o más, y 10 µF cerámico de 25 V** en VBAT, cerca del driver.
 
-### 4.2 Regulador de 5 V soldado: AP63205WU-7
+### 4.2 Regulador de 5 V: huella TO-220 (7805 o equivalente conmutado)
+
+Una sola huella de 3 pines (1 = entrada, 2 = GND, 3 = salida) que acepta cualquiera de estas dos piezas:
+
+| Opción | Ventaja | Cuidado |
+| --- | --- | --- |
+| **L7805CV** (7805 clásico) | Se consigue en cualquier casa de electrónica | Es lineal: pierde (Vbat − 5 V) × corriente en calor. Con 8,4 V y 0,3 A son unos 1 W; con 0,5 A, 1,7 W. Con θJA ≈ 50 °C/W (estimado) eso es entre +50 y +85 °C sobre el ambiente, así que conviene un disipador chico o cobre amplio. Además su caída mínima es de unos 2 V: **por debajo de ~7 V de batería la salida deja de ser 5 V**. [verificar en la hoja de datos de la pieza] |
+| **7805 conmutado "drop-in"** (por ejemplo R-78E5.0-1.0 u OKI-78SR-5/1.5) | Mismos 3 pines que un 7805, rendimiento ~90 %, casi no calienta, sin componentes externos | Entrada mínima también de ~7 V. Verificar pinout y rango en la hoja de datos de la pieza que compres |
+
+Recomendación: **soldar primero el drop-in conmutado si lo conseguís, y dejar el L7805 como plan B**; la huella es la misma.
+
+Capacitores (circuito típico del 7805): **0,33 µF en la entrada y 0,1 µF en la salida**, pegados al regulador. Agregar **10 µF** (cerámico de 25 V en la entrada, de 10 V o más en la salida) y 100 nF en cada riel de 5 V cerca de los conectores de Sharp. Para el drop-in, los mismos 10 µF alcanzan.
+
+Consecuencia práctica: **no usar la batería por debajo de ~7,0 V (3,5 V por celda)**, o los Sharp, alimentados a 5 V, empiezan a derivar. Con el regulador lineal o con el drop-in. Un cargador con corte por celda lo evita.
+
+Consumo estimado en 5 V: 4 Sharp (26 mA típico, 36 mA máximo cada uno) + el S3-Zero con Wi-Fi (del orden de 100–350 mA según el momento), es decir, unos 0,3–0,5 A. Dentro de lo que dan las dos opciones.
+
+### 4.2b Alternativa SMD (no elegida): AP63205WU-7
 Buck de 5 V fijos, entrada de 3,8 a 32 V, hasta 2 A, encapsulado TSOT26 de 6 pines. Valores de la tabla de la [hoja de datos de Diodes](https://www.mouser.com/datasheet/2/115/AP63200_AP63201_AP63203_AP63205-1525010.pdf):
 
 | Pieza | Valor | Nota |
@@ -88,13 +105,13 @@ Consumo estimado en 5 V: 4 Sharp (26 mA típico, 36 mA máximo cada uno) + el S3
 
 ### 4.3 Alimentación del S3-Zero
 - El pad **5V** del S3-Zero acepta de 3,7 a 6 V, y su LDO de 3,3 V (ME6217C33, 800 mA) alimenta el pad **3V3**. [Waveshare](https://docs.waveshare.com/ESP32-S3-Zero)
-- Poner un **diodo Schottky** (SS14 o similar) entre los 5 V del buck y el pad 5V del S3-Zero para que el buck y el USB no se alimenten entre sí. El S3-Zero recibe unos 4,6 V, dentro de su rango.
+- Poner un **diodo Schottky** (SS14 o similar) entre los 5 V del regulador y el pad 5V del S3-Zero para que el regulador y el USB no se alimenten entre sí. El S3-Zero recibe unos 4,6 V, dentro de su rango.
 - Los Sharp toman los 5 V **antes** del diodo. Con solo USB conectado los Sharp y los motores quedan apagados, que es lo deseable al programar.
 - **[verificar]** cómo conecta Waveshare VBUS y el pad 5V dentro de la placa antes de depender de este diodo.
 
 ### 4.4 Tensión de los motores
 El TB6612FNG admite **VM de 4,5 a 13,5 V** y 1,2 A por canal (3,2 A de pico). Se propone **VM directo de VBAT** (hasta 8,4 V).
-- **[verificar]** la tensión nominal de los N20. Si son de 6 V, con 8,4 V hay que **limitar el PWM máximo por firmware** (aprox. 180 de 255 para un promedio de 6 V) para no recalentarlos.
+- **Los N20 son de 6 V** (dato confirmado). Con la batería llena (8,4 V) el PWM máximo para un promedio de 6 V es 6/8,4 ≈ 71 %, es decir **unos 180 de 255**; con 7,4 V sería 81 % (≈ 207). Se propone **tope fijo de 180** en el firmware al principio y subirlo solo si los motores no se calientan. Una lectura de la tensión de batería permitiría ajustarlo en vivo, pero no queda pin libre en el borde. [decidir]
 - Se deja un **puente de soldadura de 3 pads** (SJ1) para elegir VM = VBAT (por defecto) o VM = +5 V. Con 5 V la hoja de datos recomienda no pasar de 0,4 A por canal por debajo de 5 V.
 
 ## 5. TB6612FNG
@@ -122,7 +139,11 @@ Datos de la [hoja de datos](https://faculty-web.msoe.edu/johnsontimoj/Common/FIL
 | 15 | PWMB | **+3,3 V fijo** |
 
 ### Cómo se maneja
-Se deja **PWMA y PWMB siempre en alto** y el PWM va en las entradas IN1/IN2, igual que con el DRV8833. Así **el `setMotor()` del firmware actual sigue valiendo** y se ahorran dos GPIO:
+Se deja **PWMA y PWMB siempre en alto (a 3,3 V)** y el PWM va en las entradas IN1/IN2, igual que con el DRV8833.
+
+**¿Por qué PWMA y PWMB a 3,3 V?** En el TB6612FNG los pines PWMA/PWMB funcionan como *habilitación* de cada puente: con el PWM en alto el puente obedece a IN1/IN2, y con el PWM en bajo se pasa a freno (según la tabla de verdad). Si se los fija en alto, el driver queda siempre habilitado y el control de velocidad se hace con el PWM en las entradas IN. Se unen a 3,3 V, que es la misma tensión de Vcc y de las salidas del ESP32, así el nivel alto es válido (las entradas aceptan entre 2,7 y 5,5 V de lógica). El motivo es práctico: **ahorra 2 GPIO**, y no queda ninguno libre en el borde del S3-Zero.
+- **Costo:** cuando el PWM está en la parte "apagada" del ciclo, el motor queda en alta impedancia (rueda libre) y no en freno, lo que da una respuesta un poco menos lineal a baja velocidad.
+- **Alternativa:** poner el PWM en PWMA/PWMB y usar IN1/IN2 solo como dirección (modo "avance/freno", más suave). Requiere 2 GPIO más, que habría que tomar de los pads 14–16 de la placa. Así **el `setMotor()` del firmware actual sigue valiendo** y se ahorran dos GPIO:
 - IN1 con PWM e IN2 en bajo: avanza (la pata PWM en bajo deja las salidas en alta impedancia, es decir, rueda libre entre pulsos).
 - IN1 e IN2 en alto: freno.
 - Los dos en bajo: parado (alta impedancia).
@@ -154,8 +175,32 @@ Según la [nota de aplicación](https://www.makerguides.com/wp-content/uploads/2
 Conector por sensor de **4 hilos: +5 V, +3,3 V, GND, OUT**; los pines 4 y 5 del Sharp se unen al hilo de 3,3 V en el lado del sensor.
 - La salida máxima de 2,3 V es compatible con el ADC del S3 usando atenuación de 11 dB (rango útil hasta unos 3,1 V).
 - **Capacitores:** 10 µF + 100 nF en +5 V cerca de cada conector (la hoja de la nota no especifica valor, es práctica estándar). Opcional: 100 nF de OUT a GND en cada entrada del ADC.
-- Pistas de las señales analógicas lejos de las salidas de motores y del nodo SW del buck.
+- Pistas de las señales analógicas lejos de las salidas de motores y del regulador conmutado (si se usa).
 - Los umbrales de la V2 hay que volver a calibrarlos: cambia el ADC y hay un sensor más. El panel Sensores del programa de calibración sirve para eso.
+
+### 6.1 Ubicación y ángulos recomendados
+
+| Sensor | Ángulo respecto al frente | Dónde | Para qué |
+| --- | --- | --- | --- |
+| `SH_I` / `SH_D` (laterales) | **90°** (perpendicular a la marcha) | Un poco **adelante del eje** (10–20 mm) y **hundidos hacia adentro** del chasis, ver abajo | Seguir pared, centrar en el pasillo y detectar aberturas laterales antes de pasar |
+| `SH_FI` / `SH_FD` (frontales) | **0°** (paralelos al frente) | En la punta del robot, **separados 40–60 mm entre sí**, simétricos respecto del eje | Detectar la pared de enfrente y **alinear el robot contra ella** (cuando las dos lecturas coinciden, el robot está perpendicular) |
+
+Por qué esos ángulos:
+- Con los frontales paralelos, la diferencia `SH_FI − SH_FD` es proporcional al error de orientación (con 50 mm de separación, 5° de giro dan unos 4 mm de diferencia), y la media es la distancia a la pared. Es lo más simple de programar.
+- Los laterales a 90° dan una lectura directamente proporcional a la distancia a la pared lateral, que es lo que necesita el control de centrado.
+
+**Restricción importante: el Sharp GP2Y0E03 mide de 4 a 50 cm.** Por debajo de 4 cm la lectura deja de ser confiable. Con las medidas del STL (base de 91 mm de ancho, frente a 50 mm del eje) y paredes de 12 mm:
+
+| Celda | Pasillo libre | Margen lateral centrado (cada lado) | Distancia punta–pared de enfrente al estar en el centro |
+| --- | ---: | ---: | ---: |
+| 18 cm | 168 mm | (168 − 91) / 2 ≈ **38 mm** | 84 − 50 = **34 mm** |
+| 25 cm | 238 mm | (238 − 91) / 2 ≈ 73 mm | 119 − 50 = 69 mm |
+
+En la celda de 18 cm (la que queda desde 2027) **los dos casos están por debajo de 40 mm**:
+- **Laterales:** hundir cada sensor unos **15–20 mm hacia adentro** respecto del borde del chasis (con ventana o corte), para que centrado lea unos 55–60 mm. Si no se puede, inclinarlos **30° hacia adelante**: la distancia medida pasa a ser d / sin 30° = 2d (≈ 77 mm centrado), pero el error de orientación se mezcla con la lectura de distancia.
+- **Frontales:** la pared de enfrente se decide al **entrar en la celda**, unos **20–40 mm antes del centro**, cuando el sensor lee más de 55 mm. Después se llega al centro **por encoders**, sin usar el Sharp.
+
+[verificar] las posiciones reales de montaje contra el CAD del chasis antes de fijar los agujeros.
 
 ## 7. Sensor de piso QRE1113GR
 
@@ -194,7 +239,7 @@ Conector de 6 pines por motor, en el mismo orden eléctrico que la V2:
 - El reglamento exige un pulsador visible y accesible para iniciar y detener el robot.
 
 ## 10. Masas
-GND común: batería, buck, S3-Zero, TB6612FNG (GND y PGND), Sharp, encoders y plaqueta de piso. Plano de GND continuo en la capa inferior; las corrientes de motor no deben pasar por debajo del S3-Zero ni de los conectores de sensores.
+GND común: batería, regulador, S3-Zero, TB6612FNG (GND y PGND), Sharp, encoders y plaqueta de piso. Plano de GND continuo en la capa inferior; las corrientes de motor no deben pasar por debajo del S3-Zero ni de los conectores de sensores.
 
 ## 11. Layout (para el PCB)
 - Dejar libre la zona de la **antena cerámica** del S3-Zero: sin cobre, pistas ni piezas debajo ni alrededor. [Waveshare lo indica](https://docs.waveshare.com/ESP32-S3-Zero)
@@ -205,17 +250,17 @@ GND común: batería, buck, S3-Zero, TB6612FNG (GND y PGND), Sharp, encoders y p
 
 ## 12. Impacto en el firmware (`AUS_KIM_V2_CALIB`)
 - Placa: **ESP32S3 Dev Module**, "USB CDC On Boot: Enabled".
-- Cambiar la tabla de pines a la de §3 y agregar el cuarto Sharp (`SH_FI`/`SH_FD`) y la salida `STBY`.
+- Cambiar la tabla de pines a la de §3 y agregar el cuarto Sharp (`SH_FI`/`SH_FD`) y la salida `STBY`. Pared de enfrente = las dos lecturas frontales por encima del umbral.
 - Habilitar `STBY` después de iniciar los motores en estado seguro y apagarlo al detener.
 - `setMotor()` y el control por PWM no cambian. Mantener la protección de no usar Serial en GPIO43/44.
 - Revisar la atenuación del ADC y recalibrar umbrales.
-- Si los N20 son de 6 V, agregar un tope de PWM.
+- Los N20 son de 6 V: **tope de PWM en 180** al principio (§4.4).
 
 ## 13. Lista de verificación antes de fabricar
-1. Tensión nominal y corriente de bloqueo de los N20.
+1. Corriente de bloqueo de los N20 (la tensión nominal es 6 V).
 2. Pinout del S3-Zero con el plano de Waveshare y huella exacta.
 3. Conexión interna entre VBUS y el pad 5V (para el Schottky).
-4. Circuito típico del AP63205 (FB, EN) y valores finales de L, C1, C2.
+4. Pinout y rango de entrada del regulador que se compre (L7805CV o drop-in conmutado). Temperatura del 7805 en carga.
 5. Tabla de verdad del TB6612FNG en el PDF original.
 6. Que STBY se mantenga en bajo durante el arranque y que los motores no se muevan al encender.
 7. Orden de cables de motor/encoder contra los conectores.
