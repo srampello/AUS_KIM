@@ -52,10 +52,14 @@ El S3-Zero saca a sus bordes los **GPIO 1 a 13, TX (GPIO43) y RX (GPIO44)**, má
 | 44 (RX) | `BIN2` | TB6612 BIN2, motor izquierdo | Salida PWM |
 | 43 (TX) | `STBY` | TB6612 STBY | Salida (habilita el driver) |
 | 3 | `START` | Pulsador de largada | Entrada, activa en LOW |
+| 14 (pad suelto) | `PWMA` | TB6612 PWMA, motor derecho | Salida PWM (cable al pad) |
+| 15 (pad suelto) | `PWMB` | TB6612 PWMB, motor izquierdo | Salida PWM (cable al pad) |
+| 16 (pad suelto) | `VBAT_SENSE` | Divisor de la batería | ADC2 (ver §5.1) |
 
 Criterios:
 - **Todas las lecturas analógicas van en ADC1 (GPIO1–10).** El ADC2 (GPIO11–20) comparte recursos con el Wi-Fi y puede fallar mientras está activo, y el panel de calibración usa Wi-Fi. [verificar con el core que uses]
-- **No quedan pines libres en el borde.** Para ampliar (por ejemplo un giróscopo) habría que soldar cables a los pads sueltos 14–18.
+- **No quedan pines libres en el borde.** Los pads sueltos 14, 15 y 16 (cara superior del S3-Zero, se sueldan con cable) llevan `PWMA`, `PWMB` y `VBAT_SENSE`. Quedan los pads 17 y 18 (cara inferior) para ampliar, por ejemplo un giróscopo.
+- **Los GPIO14–16 son ADC2.** Como salidas PWM no hay problema; `VBAT_SENSE` solo se puede leer con el Wi-Fi apagado (en la carrera). [verificar]
 - **GPIO3 es pin de arranque (strapping).** Se usa para START con pull-up a 3,3 V; según la hoja de datos del S3 solo condiciona el origen del JTAG y en la configuración por defecto no tiene efecto. [verificar]
 - **GPIO43/44 son la UART0.** Se usan como salidas normales, por eso en el firmware **no hay que usar `Serial0`/UART0**. Con "USB CDC On Boot: Enabled" `Serial` va por el USB y no los toca. Es la misma trampa que dejó el motor izquierdo a fondo en la V2.
 - Durante el arranque la ROM puede escribir texto por GPIO43. Como `STBY` tiene pull-down y las entradas IN del driver tienen pull-down interno, los motores quedan sin energía igual. [verificar en el robot real]
@@ -111,7 +115,7 @@ Consumo estimado en 5 V: 4 Sharp (26 mA típico, 36 mA máximo cada uno) + el S3
 
 ### 4.4 Tensión de los motores
 El TB6612FNG admite **VM de 4,5 a 13,5 V** y 1,2 A por canal (3,2 A de pico). Se propone **VM directo de VBAT** (hasta 8,4 V).
-- **Los N20 son de 6 V** (dato confirmado). Con la batería llena (8,4 V) el PWM máximo para un promedio de 6 V es 6/8,4 ≈ 71 %, es decir **unos 180 de 255**; con 7,4 V sería 81 % (≈ 207). Se propone **tope fijo de 180** en el firmware al principio y subirlo solo si los motores no se calientan. Una lectura de la tensión de batería permitiría ajustarlo en vivo, pero no queda pin libre en el borde. [decidir]
+- **Los N20 son de 6 V** (dato confirmado). Con la batería llena (8,4 V) el PWM máximo para un promedio de 6 V es 6/8,4 ≈ 71 %, es decir **unos 180 de 255**; con 7,4 V sería 81 % (≈ 207). Se propone **tope fijo de 180** en el firmware al principio y subirlo solo si los motores no se calientan. Con la lectura de batería (`VBAT_SENSE`, §5.1) el límite se ajusta en vivo y el tope fijo queda solo como respaldo.
 - Se deja un **puente de soldadura de 3 pads** (SJ1) para elegir VM = VBAT (por defecto) o VM = +5 V. Con 5 V la hoja de datos recomienda no pasar de 0,4 A por canal por debajo de 5 V.
 
 ## 5. TB6612FNG
@@ -133,26 +137,40 @@ Datos de la [hoja de datos](https://faculty-web.msoe.edu/johnsontimoj/Common/FIL
 | 19 | STBY | `STBY` (GPIO43) + pull-down de 100 kΩ a GND |
 | 21 | AIN1 | `AIN1` (GPIO11) |
 | 22 | AIN2 | `AIN2` (GPIO12) |
-| 23 | PWMA | **+3,3 V fijo** |
+| 23 | PWMA | `PWMA` (GPIO14) |
 | 17 | BIN1 | `BIN1` (GPIO13) |
 | 16 | BIN2 | `BIN2` (GPIO44) |
-| 15 | PWMB | **+3,3 V fijo** |
+| 15 | PWMB | `PWMB` (GPIO15) |
 
-### Cómo se maneja
-Se deja **PWMA y PWMB siempre en alto (a 3,3 V)** y el PWM va en las entradas IN1/IN2, igual que con el DRV8833.
-
-**¿Por qué PWMA y PWMB a 3,3 V?** En el TB6612FNG los pines PWMA/PWMB funcionan como *habilitación* de cada puente: con el PWM en alto el puente obedece a IN1/IN2, y con el PWM en bajo se pasa a freno (según la tabla de verdad). Si se los fija en alto, el driver queda siempre habilitado y el control de velocidad se hace con el PWM en las entradas IN. Se unen a 3,3 V, que es la misma tensión de Vcc y de las salidas del ESP32, así el nivel alto es válido (las entradas aceptan entre 2,7 y 5,5 V de lógica). El motivo es práctico: **ahorra 2 GPIO**, y no queda ninguno libre en el borde del S3-Zero.
-- **Costo:** cuando el PWM está en la parte "apagada" del ciclo, el motor queda en alta impedancia (rueda libre) y no en freno, lo que da una respuesta un poco menos lineal a baja velocidad.
-- **Alternativa:** poner el PWM en PWMA/PWMB y usar IN1/IN2 solo como dirección (modo "avance/freno", más suave). Requiere 2 GPIO más, que habría que tomar de los pads 14–16 de la placa. Así **el `setMotor()` del firmware actual sigue valiendo** y se ahorran dos GPIO:
-- IN1 con PWM e IN2 en bajo: avanza (la pata PWM en bajo deja las salidas en alta impedancia, es decir, rueda libre entre pulsos).
-- IN1 e IN2 en alto: freno.
-- Los dos en bajo: parado (alta impedancia).
-Tabla de verdad según la hoja de datos (el texto extraído estaba parcialmente cortado) **[verificar en el PDF original]**.
+### Cómo se maneja (versión estable: PWM en PWMA/PWMB)
+- `PWMA`/`PWMB` reciben el PWM (GPIO14/15) y `AIN1/AIN2`, `BIN1/BIN2` solo fijan el **sentido**.
+- Avance: IN1 = alto, IN2 = bajo, PWM variable. Retroceso: IN1 = bajo, IN2 = alto.
+- En la parte "apagada" del ciclo el puente queda en **freno** (los dos bajos de la carga en corto), no en rueda libre. Es el modo *drive/brake* (decaimiento lento): la corriente y el torque son mucho más lineales con el ciclo de trabajo, y eso es lo que mejor trata un lazo de control de velocidad.
+- Freno total: IN1 = IN2 = alto. Parada libre: IN1 = IN2 = bajo con PWM en alto, o `STBY` en bajo.
+- Tabla de verdad según la hoja de datos (el texto extraído estaba parcialmente cortado) **[verificar en el PDF original]**.
 
 ### Capacitores (circuito típico de la hoja de datos)
 - **VM:** 10 µF + 100 nF cerca de los pines 13/14/24, más el de 100 µF de §4.1.
 - **Vcc:** 10 µF + 100 nF cerca del pin 20.
 - La hoja de datos pide que estos capacitores estén **lo más cerca posible del chip**.
+
+### 5.1 Para que el manejo sea lo más estable posible
+
+**Hardware**
+- PWM en PWMA/PWMB con decaimiento lento (arriba). Es el cambio que más pesa.
+- **Capacitor de 100 nF cerámico entre los dos bornes de cada motor**, soldado en el motor o lo más cerca posible, y opcionalmente 100 nF de cada borne a la carcasa metálica. Baja el ruido de las escobillas que, si no, aparece en los encoders y en el ADC de los Sharp.
+- Condensadores del driver (§5): 10 µF + 100 nF en VM y en Vcc pegados al chip, más 100 µF en VBAT.
+- Alimentación del driver directa de VBAT, **separada de los 5 V de los sensores**, con retorno de GND corto y ancho (plano de GND, sin pasar por debajo del S3-Zero).
+- Cables de encoder cortos y lejos de los cables de motor. Opcional: 100 pF entre cada línea de encoder y GND, y la huella de pull-up de 10 kΩ.
+- **Medir la batería:** divisor de **100 kΩ / 47 kΩ** (de VBAT a GND, punto medio al GPIO16) con 100 nF a GND. A 8,4 V da unos 2,7 V, dentro del rango del ADC con 11 dB. Sirve para compensar la caída de la batería.
+
+**Firmware**
+- PWM a **20 kHz** (fuera de lo audible; el TB6612 admite hasta 100 kHz). Resolución de 10 bits.
+- **Control de velocidad en lazo cerrado** con los encoders: PID de velocidad por rueda a 1 kHz, con avance directo (feedforward) más corrección, y anti-windup.
+- **Compensación por tensión de batería:** el duty = (velocidad pedida) × (6 V / VBAT). Así un robot con batería llena y uno con batería gastada se comportan igual, y con 8,4 V no se superan los 6 V de los motores. Reemplaza el tope fijo de 180.
+- **Rampas** de aceleración y frenado, y una zona muerta mínima (PWM por debajo del cual el motor no gira).
+- Habilitar `STBY` solo después de iniciar y cortarlo ante cualquier timeout.
+- Mantener la regla de no usar `Serial0` (GPIO43/44).
 
 ### Seguridad
 - `STBY` con pull-down: el driver arranca **deshabilitado** y el firmware lo habilita (`digitalWrite(STBY, HIGH)`) solo después de inicializar.
