@@ -4,6 +4,10 @@
 >
 > Documentos anteriores: [V2 ESP32-C3](AUS_KIM_V2_ESP32-C3.md) · [V1 histórica](conexiones.md).
 
+![Diagrama de módulos y componentes de la V3](img/AUS_KIM_V3_diagrama.png)
+
+*Esquema ilustrativo de módulos y componentes (no es el layout del PCB). Fuente editable: `tools/generar_diagrama_v3.py`.*
+
 ## 1. Lista de componentes pedida
 
 | Bloque | Componente | Soldado a la placa |
