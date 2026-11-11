@@ -8,6 +8,18 @@
 
 *Esquema ilustrativo de módulos y componentes (no es el layout del PCB). Fuente editable: `tools/generar_diagrama_v3.py`.*
 
+### Diagramas por etapa
+
+Cada etapa por separado, con a dónde va conectado cada componente (esquemas ilustrativos, no son el layout del PCB). Fuente editable: `tools/generar_diagramas_etapas_v3.py` (los PNG se regeneran con `tools/render_svg_etapas.py`).
+
+1. [Batería, protección y bus VBAT](img/etapas/etapa1_bateria_vbat.png)
+2. [Regulador de +5 V y riel de +3,3 V](img/etapas/etapa2_regulador_5v_3v3.png)
+3. [Driver TB6612FNG (pin por pin, condensadores, STBY y tabla de manejo)](img/etapas/etapa3_driver_tb6612fng.png)
+4. [Motores N20 con encoder](img/etapas/etapa4_motores_encoders.png)
+5. [Sensores Sharp GP2Y0E03 (conexión y ubicación)](img/etapas/etapa5_sensores_sharp.png)
+6. [Sensor de piso QRE1113GR y pulsador START](img/etapas/etapa6_qre_start.png)
+7. [Mapa de pines del ESP32-S3-Zero](img/etapas/etapa7_mapa_pines_s3.png)
+
 ## 1. Lista de componentes pedida
 
 | Bloque | Componente | Soldado a la placa |
